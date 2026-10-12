@@ -497,13 +497,17 @@ describe('renderList rows', () => {
       }
     })
 
-    test('draws the facts line dim on the focus background, filled to the width', async ($, on) => {
+    test('draws the facts line on the focus background: the opening piece as is, the later ones swapped, filled to the width', async ($, on) => {
       const rig = createRig(on)
       const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100, { focusedKey: 'pr-15' }), handlersFor([]))
       const texts = textsOf(await ui.find({ key: 'pr-15' }))
       const second = texts.slice(texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
       expect(second.length).toBeGreaterThan(3)
-      for (const node of second) expect(node.props).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      // The engine's inverse stops at the newline of the opening piece and starts again on every later one.
+      expect(second[0]?.props).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      const failing = second.find((node) => String(node.children?.[0]).includes('failing'))
+      expect(failing?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
+      for (const node of second.slice(1).filter((node) => node !== failing)) expect(node.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_DIM })
       expect(cellWidth(second.map((node) => String(node.children?.[0])).join('').slice(1))).toBe(100)
       await ui.unmount()
     })
@@ -524,7 +528,7 @@ describe('renderList rows', () => {
       }
     })
 
-    test('a hovered row looks like a focused one: the same swapped colors, the focus background on the facts line', async ($, on) => {
+    test('a hovered row looks like a focused one: the same colors on both lines', async ($, on) => {
       const rig = createRig(on)
       const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100), handlersFor([]))
       const texts = textsOf(await ui.find({ key: 'pr-15' }))
@@ -532,7 +536,8 @@ describe('renderList rows', () => {
       const hoverOf = (content: string) => (texts.find((node) => node.children?.[0] === content) as { hover?: unknown } | undefined)?.hover
       expect(hoverOf('✗')).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
       expect(hoverOf('fix')).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
-      for (const node of texts.slice(split)) expect((node as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      expect((texts[split] as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      for (const node of texts.slice(split + 1)) expect((node as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_BG })
       const rows = (await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))
       expect(rows.map((box) => String(box.key))).toEqual(['row-15'])
       await ui.unmount()

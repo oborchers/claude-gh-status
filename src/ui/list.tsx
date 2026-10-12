@@ -173,10 +173,15 @@ function titlePiece(table: UiTable, palette: Palette, run: Run, isFocused: boole
   )
 }
 
-/** One piece of the facts line: dim at rest, the focus background when focused or under the pointer. */
-function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean, text = run.text): RenderElement {
+/**
+ * One piece of the facts line: its own colors at rest. The engine's inverse stops at the
+ * newline inside the piece that opens the line, and every later piece is inverted again,
+ * so those are drawn swapped like the title line; the opening piece takes the focus
+ * colors as they are.
+ */
+function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean, text = run.text, isOpening = false): RenderElement {
   const { Text } = table
-  const hover = { color: FOCUS_DIM, backgroundColor: FOCUS_BG }
+  const hover = isOpening ? { color: FOCUS_DIM, backgroundColor: FOCUS_BG } : swapped(segmentColor(palette, run) ?? FOCUS_DIM, false)
   if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{text}</Text>
   return (
     <Text color={run.hex ?? tone(palette, run.color)} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
@@ -187,8 +192,7 @@ function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolea
 
 /**
  * A pull request: one Button of two lines, so the focus ring stops once per PR. The
- * title line (marker, status symbol, title, labels) is the one the engine inverts;
- * the facts line starts with a newline and is not inverted.
+ * engine inverts every piece but the one that opens the facts line, from its newline on.
  */
 function prRow(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
   const { Box, Button, Text } = table
@@ -217,7 +221,7 @@ function prRow(table: UiTable, view: ListView, handlers: ListHandlers, item: Lis
   const facts = fitRuns(metaRuns(item, view.nowMs), Math.max(1, columns - PREFIX_WIDTH))
   const factsUsed = PREFIX_WIDTH + runsWidth(facts)
   const children: RenderElement[] = first.map((run) => titlePiece(table, palette, run, isFocused))
-  children.push(factPiece(table, palette, { text: '' }, isFocused, `\n${' '.repeat(PREFIX_WIDTH)}`))
+  children.push(factPiece(table, palette, { text: '' }, isFocused, `\n${' '.repeat(PREFIX_WIDTH)}`, true))
   for (const run of facts) children.push(factPiece(table, palette, run, isFocused))
   children.push(factPiece(table, palette, { text: '' }, isFocused, ' '.repeat(Math.max(0, columns - factsUsed))))
   return (
