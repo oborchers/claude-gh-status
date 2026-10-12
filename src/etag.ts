@@ -58,7 +58,10 @@ export function fastPaths(location: RepoLocation, target: FastTarget): string[] 
     `${base}/commits/${target.headOid}/status`,
     // Its updated_at moves on every review and comment, and its body carries mergeable_state.
     `${base}/pulls/${target.prNumber}`,
+    // Both comment lists carry body and updated_at, so an edit in place changes their ETag.
+    // GitHub lists comments oldest first: an edit is only seen within the first 100 comments of each list.
     `${base}/issues/${target.prNumber}/comments?per_page=100`,
+    `${base}/pulls/${target.prNumber}/comments?per_page=100`,
   ]
 }
 

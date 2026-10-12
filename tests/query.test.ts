@@ -164,6 +164,71 @@ describe('normalize', () => {
     ])
   })
 
+  describe('comment edits', () => {
+    const comment = (login: string, createdAt: string, lastEditedAt: string | null, id: number) => ({
+      author: { login },
+      createdAt,
+      lastEditedAt,
+      url: `https://github.com/cli/cli/pull/14580#issuecomment-${id}`,
+    })
+
+    type Raw = { detail: { data: { node: { comments: { nodes: unknown[] }; reviewThreads: { nodes: unknown[] } } } } }
+    function withComments(comments: unknown[], threadComments: unknown[] = []) {
+      const raw = structuredClone(prGreen) as unknown as Raw
+      raw.detail.data.node.comments.nodes = comments
+      raw.detail.data.node.reviewThreads.nodes = [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 3, comments: { nodes: threadComments } }]
+      return raw
+    }
+
+    test('the queries ask for lastEditedAt on the last five comments', () => {
+      expect(PR_DETAIL_QUERY).toContain('comments(last: 5) { totalCount nodes { author { login } createdAt lastEditedAt url } }')
+      expect(PR_DETAIL_QUERY).toContain('comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } }')
+    })
+
+    test('an unedited comment has editedAt null (also when the field is absent)', () => {
+      const pr = normalize(prGreen, cliLocation).pr
+      expect(pr?.lastComment?.editedAt).toBeNull()
+      const raw = withComments([comment('anna', '2026-10-01T00:00:00Z', null, 1)])
+      expect(normalize(raw, cliLocation).pr?.lastComment?.editedAt).toBeNull()
+    })
+
+    test('an edited older comment beats a newer unedited one', () => {
+      const raw = withComments([
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 1),
+        comment('anna', '2026-10-03T00:00:00Z', null, 2),
+      ])
+      const last = normalize(raw, cliLocation).pr?.lastComment
+      expect(last?.author).toBe('review-bot')
+      expect(last?.editedAt).toBe('2026-10-05T00:00:00Z')
+    })
+
+    test('a newer comment beats an older edit; ties go to the later comment', () => {
+      const newer = withComments([
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 1),
+        comment('anna', '2026-10-06T00:00:00Z', null, 2),
+      ])
+      expect(normalize(newer, cliLocation).pr?.lastComment?.author).toBe('anna')
+      const tie = withComments([comment('a', '2026-10-01T00:00:00Z', null, 1), comment('b', '2026-10-01T00:00:00Z', null, 2)])
+      expect(normalize(tie, cliLocation).pr?.lastComment?.author).toBe('b')
+    })
+
+    test('a thread surfaces its most recently active comment', () => {
+      const raw = withComments([], [
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 7),
+        comment('anna', '2026-10-03T00:00:00Z', null, 8),
+      ])
+      const thread = normalize(raw, cliLocation).pr?.threads[0]
+      expect(thread?.last?.author).toBe('review-bot')
+      expect(thread?.last?.editedAt).toBe('2026-10-05T00:00:00Z')
+    })
+
+    test('malformed comments are skipped; none gives null', () => {
+      const raw = withComments([{ author: null, createdAt: 5 }, comment('anna', '2026-10-01T00:00:00Z', null, 2)])
+      expect(normalize(raw, cliLocation).pr?.lastComment?.author).toBe('anna')
+      expect(normalize(withComments([]), cliLocation).pr?.lastComment).toBeNull()
+    })
+  })
+
   test('running and queued checks, unknown merge facts, a ghost comment author', () => {
     const pr = normalize(prRunning, cliLocation).pr
     expect(pr?.checks.map(check => [check.name, check.state])).toEqual([

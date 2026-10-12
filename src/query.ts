@@ -10,6 +10,7 @@
 
 import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
+import { activityAt } from './status'
 import type {
   Check,
   CheckState,
@@ -62,8 +63,8 @@ export const PR_DETAIL_QUERY = `query($id: ID!) {
       viewerCanMergeAsAdmin
       reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug organization { login } } ... on Bot { login } } } }
       latestReviews(first: 20) { nodes { author { login } state submittedAt } }
-      reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 1) { nodes { author { login } createdAt url } } } }
-      comments(last: 1) { totalCount nodes { author { login } createdAt url } }
+      reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } } } }
+      comments(last: 5) { totalCount nodes { author { login } createdAt lastEditedAt url } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { nodes {
         ${CONTEXT_FIELDS}
       } } } } } }
@@ -249,7 +250,22 @@ function toCommentRef(node: Obj | undefined): CommentRef | null {
   const createdAt = asStr(node.createdAt)
   const url = asStr(node.url)
   if (createdAt === null || url === null) return null
-  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, url }
+  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: asStr(node.lastEditedAt), url }
+}
+
+/**
+ * The most recently active of a connection's comments (max of createdAt and
+ * lastEditedAt), so a review bot that edits an older comment in place
+ * surfaces. Ties go to the later node.
+ */
+function latestActive(nodes: Obj[]): CommentRef | null {
+  let best: CommentRef | null = null
+  for (const node of nodes) {
+    const ref = toCommentRef(node)
+    if (ref === null) continue
+    if (best === null || Date.parse(activityAt(ref)) >= Date.parse(activityAt(best))) best = ref
+  }
+  return best
 }
 
 function toReviewRequest(node: Obj): ReviewRequest | null {
@@ -280,7 +296,7 @@ function toThread(node: Obj): ReviewThread {
     isOutdated: asBool(node.isOutdated),
     path: asStr(node.path),
     line: asNum(node.line),
-    last: toCommentRef(nodesOf(node.comments)[0]),
+    last: latestActive(nodesOf(node.comments)),
   }
 }
 
@@ -396,7 +412,7 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     reviewRequests,
     threads: nodesOf(node.reviewThreads).map(toThread),
     commentCount: asNum(comments?.totalCount) ?? 0,
-    lastComment: toCommentRef(nodesOf(comments)[0]),
+    lastComment: latestActive(nodesOf(comments)),
   }
   return { pr, rateLimit }
 }
