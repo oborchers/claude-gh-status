@@ -4,7 +4,7 @@ import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
 import type { CommentRef, PullRequest, RepoLocation } from '../src/model'
 import { activityAt, commentWhen, transitions } from '../src/status'
-import { EDIT_GRACE_MS, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, normalize, selectCandidate, statusContextState } from '../src/query'
+import { EDIT_GRACE_MS, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, latestPerCheck, normalize, selectCandidate, statusContextState } from '../src/query'
 import {
   prAdmin,
   prAutoMerge,
@@ -23,7 +23,7 @@ import {
   prStatusContexts,
   prFailing,
 } from './fixtures/pr-raw'
-import { makeSnapshot } from './fixtures/pr-builder'
+import { makeCheck, makeSnapshot } from './fixtures/pr-builder'
 
 const cliLocation: RepoLocation = { cwd: '/work/cli', branch: 'feature', owner: 'cli', repo: 'cli', pinnedLogin: null }
 
@@ -554,5 +554,29 @@ describe('fetchPullRequest', () => {
     const result = await fetchPullRequest(exec, { ...cliLocation, branch: null }, 'oborchers')
     expect(result.kind).toBe('error')
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('latestPerCheck', () => {
+  test('a workflow that ran twice on the commit keeps only the later run of each check', () => {
+    const checks = [
+      makeCheck({ name: 'prepare', workflow: 'Review', jobId: 10, state: 'success' }),
+      makeCheck({ name: 'review', workflow: 'Review', jobId: 11, state: 'skipped' }),
+      makeCheck({ name: 'lint', workflow: 'CI', jobId: 12, state: 'success' }),
+      makeCheck({ name: 'prepare', workflow: 'Review', jobId: 20, state: 'success' }),
+      makeCheck({ name: 'review', workflow: 'Review', jobId: 21, state: 'success' }),
+    ]
+    const kept = latestPerCheck(checks)
+    expect(kept.map((check) => `${check.name}:${check.jobId}`)).toEqual(['prepare:20', 'review:21', 'lint:12'])
+  })
+
+  test('the same name in different workflows stays twice; commit statuses are never merged', () => {
+    const checks = [
+      makeCheck({ name: 'build', workflow: 'A', jobId: 1 }),
+      makeCheck({ name: 'build', workflow: 'B', jobId: 2 }),
+      makeCheck({ name: 'ci/legacy', workflow: null, jobId: null }),
+      makeCheck({ name: 'ci/legacy', workflow: null, jobId: null }),
+    ]
+    expect(latestPerCheck(checks)).toHaveLength(4)
   })
 })

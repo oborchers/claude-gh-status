@@ -252,7 +252,7 @@ describe('stale data hint', () => {
 })
 
 describe('sortChecks', () => {
-  test('puts required first, then failed, running, queued, the rest, and drops stale', () => {
+  test('puts required first, then failed, running, queued, passed, checks that did not run last, and drops stale', () => {
     const checks: Check[] = [
       makeCheck({ name: 'ok-optional' }),
       makeCheck({ name: 'queued-optional', state: 'queued' }),
@@ -262,6 +262,9 @@ describe('sortChecks', () => {
       makeCheck({ name: 'failed-required', isRequired: true, state: 'failure' }),
       makeCheck({ name: 'old', state: 'stale' }),
       makeCheck({ name: 'running-optional', state: 'running' }),
+      makeCheck({ name: 'skipped-early', state: 'skipped' }),
+      makeCheck({ name: 'ok-late' }),
+      makeCheck({ name: 'neutral-optional', state: 'neutral' }),
     ]
     expect(sortChecks(checks).map((check) => check.name)).toEqual([
       'failed-required',
@@ -271,6 +274,9 @@ describe('sortChecks', () => {
       'running-optional',
       'queued-optional',
       'ok-optional',
+      'ok-late',
+      'skipped-early',
+      'neutral-optional',
     ])
   })
 })

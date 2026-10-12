@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Checks that did not run (skipped, neutral) are listed below the ones that ran.
+- A workflow that ran twice on the same commit no longer lists every check twice: only the latest run per workflow and check name is shown and counted, as GitHub judges mergeability.
+
 ## [0.1.2] - 2026-10-12
 
 ### Fixed
