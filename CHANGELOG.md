@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `/pr` was unreachable in a project with a skill or command of the same name (for example `.claude/skills/pr`): the typeahead showed only the skill. The mod now registers its command only when the name is free, always also registers `/gh-pr`, and shows a toast once per session when the configured name is taken. New setting `command` (Command name, default `pr`) changes the name; usage and error texts show the name in use.
+
 ## [0.1.3] - 2026-10-12
 
 ### Fixed

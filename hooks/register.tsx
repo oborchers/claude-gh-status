@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
+import type { CommandInfo, EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
 import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isTooEarly, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
@@ -34,7 +34,18 @@ const DEFAULT_IDLE_SECONDS = 30
 /** Commands after which the pull request is likely to have changed. */
 const CHANGING_COMMAND = /\bgit\s+(push|pull|checkout|switch|rebase|merge|commit|reset)\b|\bgh\s+(pr|run)\b/
 
-const USAGE = 'Usage: /pr [refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]'
+const DEFAULT_COMMAND = 'pr'
+/** The name that is always registered, so the mod stays reachable when the configured one is taken. */
+const FALLBACK_COMMAND = 'gh-pr'
+const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
+const PLUGIN_NAME = 'gh-status'
+
+const usageFor = (name: string): string => `Usage: /${name} [refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
+
+/** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
+function commandNameOf(value: unknown): string {
+  return typeof value === 'string' && COMMAND_NAME.test(value) ? value : DEFAULT_COMMAND
+}
 
 /** The write subcommands and their short aliases. */
 const WRITE_COMMANDS: Record<string, 'merge' | 'enqueue' | 'dequeue' | 'auto' | 'admin-merge'> = {
@@ -346,6 +357,11 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
 export const register: Register = (on, options) => {
   const config = configOf(options)
   const palette = paletteFor(options.colors)
+  const configured = commandNameOf(options.command)
+  /** The names this mod answers to; set by session.start, empty before. */
+  let activeNames: string[] = []
+  /** Names this mod registered itself, so a second session.start (hot reload) does not read them as taken. */
+  const ownNames = new Set<string>()
   const accountConfig = parseAccountConfig(typeof options.accounts === 'string' ? options.accounts : '')
   let live: Live | null = null
 
@@ -356,10 +372,33 @@ export const register: Register = (on, options) => {
     } catch {
       // a fresh session starts without a pending action either way
     }
+    // A skill or another command of the same name hides the mod's: register the configured name only when it is free.
+    let taken: CommandInfo[] = []
     try {
-      await $.command.register({ name: 'pr', description: 'Show the pull request status of this branch', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+      taken = await $.command.list()
     } catch {
-      // the pane and band still work without the command
+      // without the list, register as if nothing were taken
+    }
+    const isTaken = (name: string): boolean =>
+      !ownNames.has(name) && taken.some(command => command.name === name && !(command.source === 'plugin' && (command.plugin === PLUGIN_NAME || command.plugin?.startsWith(`${PLUGIN_NAME}@`) === true)))
+    const wanted = isTaken(configured) ? [FALLBACK_COMMAND] : [configured, FALLBACK_COMMAND]
+    const registeredNow: string[] = []
+    for (const name of [...new Set(wanted)]) {
+      try {
+        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+        registeredNow.push(name)
+        ownNames.add(name)
+      } catch {
+        // the pane and band still work without the command
+      }
+    }
+    activeNames = registeredNow
+    if (!wanted.includes(configured) && configured !== FALLBACK_COMMAND) {
+      try {
+        await $.ui.toast(`gh-status: /${configured} is taken here (skill or command), use /${FALLBACK_COMMAND}`)
+      } catch {
+        // a missing toast changes nothing
+      }
     }
 
     const exec: Exec = (argv, init) => $.process.run(argv, init)
@@ -432,7 +471,10 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'pr' }, async ($, e) => {
+  // The name is a setting, so the matcher cannot be a literal: the hook sees every command run
+  // and answers only the names session.start registered; any other command goes on untouched.
+  on('command.run', async ($, e, next) => {
+    if (!activeNames.includes(e.command)) return next(e)
     const argument = e.args.trim().toLowerCase()
     if (argument === '') return { text: await openPane($, live) }
     if (argument === 'refresh') {
@@ -460,8 +502,8 @@ export const register: Register = (on, options) => {
       await cancelPending($)
       return { text: 'PR pane closed.' }
     }
-    return { text: USAGE }
-  }).catch(($, e, next) => (next.called ? next(e) : { text: 'The /pr command failed.' }))
+    return { text: usageFor(e.command) }
+  }).catch(($, e, next) => (next.called ? next(e) : { text: `The /${e.command} command failed.` }))
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const result = await next(e)
@@ -512,7 +554,7 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Closing the pane (its mark, /pr close) also drops what it asked to confirm.
+  // Closing the pane (its mark, `close`) also drops what it asked to confirm.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     await update($, pendingState, () => null)
     return next(e)

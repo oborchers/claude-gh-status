@@ -21,6 +21,10 @@ type Fixture = { list: unknown; detail: unknown }
 type World = {
   argvs: string[][]
   registered: { name: string; argumentHint?: string; description: string }[]
+  /** What `$.command.list()` answers: the commands and skills that exist before the mod registers. */
+  /** When set, `$.command.list()` rejects. */
+  listThrows: boolean
+  existing: { name: string; description: string; source: 'builtin' | 'plugin' | 'user' | 'mcp'; plugin?: string }[]
   opened: { id: string; title?: string }[]
   closed: string[]
   toasts: string[]
@@ -82,6 +86,8 @@ function setup(on: On, fixture: Fixture = prRunning): World {
   const world: World = {
     argvs: [],
     registered: [],
+    existing: [],
+    listThrows: false,
     opened: [],
     closed: [],
     toasts: [],
@@ -106,6 +112,10 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     return { value: answer(world, e.argv) }
   })
   on('session.cwd', () => ({ value: '/work/cli' }))
+  on('command.list', () => {
+    if (world.listThrows) throw new Error('no list')
+    return { value: world.existing }
+  })
   on('command.register', (_$, e) => {
     world.registered.push(e)
     return { value: { command: e.name } }
@@ -154,14 +164,16 @@ async function start($: Engine, world: World) {
   await world.clock.settle()
 }
 
-const runPr = ($: Engine, args = '') => $.command.run({ command: 'pr', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+const runCommand = ($: Engine, command: string, args = '') => $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+const runPr = ($: Engine, args = '') => runCommand($, 'pr', args)
 
 describe('session start', () => {
   test('registers the pr command and starts a first refresh', async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered).toHaveLength(1)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
     expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+    expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
 
@@ -169,8 +181,123 @@ describe('session start', () => {
     const world = setup(on)
     await $.session.start({ cwd: '/work/cli', surface: null, isInteractive: false })
     await world.clock.settle()
-    expect(world.registered).toHaveLength(1)
+    expect(world.registered).toHaveLength(2)
     expect(world.fullFetches()).toBe(0)
+  })
+})
+
+describe('the command name', () => {
+  const skill = { name: 'pr', description: 'Open a pull request', source: 'user' as const }
+
+  test('a skill named pr hides the mod: only gh-pr is registered, with one toast', async ($, on) => {
+    const world = setup(on)
+    world.existing = [skill]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts.filter(text => text.includes('is taken here'))).toEqual(['gh-status: /pr is taken here (skill or command), use /gh-pr'])
+  })
+
+  test('a built-in or a plugin command of that name counts as taken too', async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'other' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+  })
+
+  test('an entry of this plugin itself is not a collision', async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'gh-status' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('a second session.start does not take its own registration for a collision', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin' }, { name: 'gh-pr', description: 'x', source: 'plugin' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'pr', 'gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('a failing command.list registers both names', async ($, on) => {
+    const world = setup(on)
+    world.listThrows = true
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+  })
+
+  test('the configured name prs is registered next to gh-pr and answers', { options: { command: 'prs' } }, async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr'])
+    const ran = await runCommand($, 'prs')
+    expect(ran.text).toContain('PR pane opened')
+    const usage = await runCommand($, 'prs', 'nonsense')
+    expect(usage.text).toContain('Usage: /prs [')
+  })
+
+  test('a taken configured name toasts with that name', { options: { command: 'prs' } }, async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'prs', description: 'x', source: 'user' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts).toContain('gh-status: /prs is taken here (skill or command), use /gh-pr')
+  })
+
+  for (const invalid of ['', 'PR', 'a b', '/pr', 'x'.repeat(33), 'p_r']) {
+    test(`the invalid name ${JSON.stringify(invalid)} falls back to pr`, { options: { command: invalid } }, async ($, on) => {
+      const world = setup(on)
+      await start($, world)
+      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    })
+  }
+
+  test('gh-pr as the configured name registers once', { options: { command: 'gh-pr' } }, async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('both names open the pane and run subcommands', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    for (const name of ['pr', 'gh-pr']) {
+      expect((await runCommand($, name)).text).toContain('PR pane opened')
+      expect((await runCommand($, name, 'close')).text).toBe('PR pane closed.')
+      expect((await runCommand($, name, 'copy')).text).toContain('Copied')
+      expect((await runCommand($, name, 'bogus')).text).toContain(`Usage: /${name} [`)
+    }
+  })
+
+  test('with pr taken, /pr is left to the skill: the hook passes it on untouched', async ($, on) => {
+    const world = setup(on)
+    world.existing = [skill]
+    const seen: string[] = []
+    on('command.run', (_$, e) => {
+      seen.push(`${e.command} ${e.args}`)
+      return { text: 'the skill answered' }
+    })
+    await start($, world)
+    expect((await runPr($, 'refresh')).text).toBe('the skill answered')
+    expect(seen).toEqual(['pr refresh'])
+    expect(world.opened).toEqual([])
+    expect((await runCommand($, 'gh-pr')).text).toContain('PR pane opened')
+  })
+
+  test('foreign commands pass through untouched', async ($, on) => {
+    const world = setup(on)
+    const seen: string[] = []
+    on('command.run', (_$, e) => {
+      seen.push(`${e.command} ${e.args}`)
+      return { text: `foreign ${e.command}` }
+    })
+    await start($, world)
+    expect((await runCommand($, 'compact', 'now')).text).toBe('foreign compact')
+    expect(seen).toEqual(['compact now'])
+    expect(world.opened).toEqual([])
   })
 })
 
