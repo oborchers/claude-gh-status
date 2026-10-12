@@ -1,4 +1,4 @@
-// The pane: header, merge, pipeline, reviews and conversation of one PR (the branch's, or the one picked from the list).
+// The detail view of the pane: header, merge, pipeline, reviews and conversation of one PR (the branch's, or the one picked from the list).
 
 import type { RenderElement } from 'claude-code'
 
@@ -19,8 +19,6 @@ const MAX_THREAD_ROWS = 12
 const MAX_PANE_ROWS = 40
 const MIN_PANE_ROWS = 6
 const HEADER_ROWS = 4
-/** The row with the back button while a pull request picked from the list is shown. */
-const BACK_ROWS = 1
 
 function checkColor(state: CheckState): Tone | undefined {
   switch (state) {
@@ -395,18 +393,58 @@ function staleRows(table: UiTable, view: View, snapshot: Pr): RenderElement[] {
 }
 
 const LIST_LABEL = 'all PRs'
+const BACK_LABEL = 'back to list'
 const LIST_GAP = 2
 
-/** The button that opens the list of open pull requests; drawn only when the list is available. */
-function listButton(table: UiTable, handlers: Handlers, marginLeft?: number): RenderElement | null {
+/** True while a confirmation waits anywhere: `b` and `l` then belong to its steps alone. */
+const isConfirming = (view: View): boolean => view.pending !== null || view.hasPending === true
+
+/** `l: all PRs` for the branch's pull request; drawn only when the list is available and no confirmation waits. */
+function listButton(table: UiTable, view: View, handlers: Handlers, marginLeft?: number): RenderElement | null {
   const { Box, Button } = table
   const { openList } = handlers
-  if (openList === undefined) return null
+  if (openList === undefined || isConfirming(view)) return null
   return (
     <Box flexShrink={0} marginLeft={marginLeft}>
       <Button key="pane-list" plain hotkey="l" label={LIST_LABEL} onPress={() => openList()} />
     </Box>
   )
+}
+
+/** `b: back to list` for a selected pull request; `l` goes back too. Hidden while a confirmation waits (`b` is its final step's). */
+function backButtons(table: UiTable, view: View, handlers: Handlers, marginLeft?: number): RenderElement | null {
+  const { Box, Button } = table
+  const { back } = handlers
+  if (view.isSelected !== true || back === undefined || isConfirming(view)) return null
+  return (
+    <Box flexShrink={0} marginLeft={marginLeft}>
+      <Button key="back" plain hotkey="b" label={BACK_LABEL} onPress={() => back()} />
+      <Box marginLeft={LIST_GAP}>
+        <Button key="pane-list" plain hotkey="l" label="list" onPress={() => back()} />
+      </Box>
+    </Box>
+  )
+}
+
+/** The navigation on the header row: back to the list for a selected pull request, the list for the branch's. */
+function navButtons(table: UiTable, view: View, handlers: Handlers, marginLeft?: number): RenderElement | null {
+  return view.isSelected === true ? backButtons(table, view, handlers, marginLeft) : listButton(table, view, handlers, marginLeft)
+}
+
+function navWidth(view: View, handlers: Handlers): number {
+  if (isConfirming(view)) return 0
+  if (view.isSelected === true) return handlers.back === undefined ? 0 : cellWidth(BACK_LABEL) + 3 + LIST_GAP + cellWidth('list') + 3 + LIST_GAP
+  return handlers.openList === undefined ? 0 : cellWidth(LIST_LABEL) + 3 + LIST_GAP
+}
+
+/**
+ * The title of a selected pull request: a plain Button keyed pr-<n> whose press only
+ * refreshes. It keeps the key of the row that opened it, so a desktop pane that drops
+ * the focus when the pressed Button is gone from the next drawing keeps it here.
+ */
+function selectedTitle(table: UiTable, handlers: Handlers, number: number, title: string): RenderElement {
+  const { Button } = table
+  return <Button key={`pr-${number}`} plain label={title} onPress={() => handlers.refresh()} />
 }
 
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
@@ -415,10 +453,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
   const columns = view.columns
   const badge = prBadge(pr)
   // One line: the colored state badge, then the title, cut to what is left.
-  const label = view.isSelected === true ? `PR #${pr.number} (selected)` : `PR #${pr.number}`
-  const { openList } = handlers
-  const listWidth = openList === undefined ? 0 : cellWidth(LIST_LABEL) + 3 + LIST_GAP
-  const title = truncate(`${label} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3 - listWidth))
+  const title = truncate(`${view.isSelected === true ? '' : 'PR '}#${pr.number} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3 - navWidth(view, handlers)))
   return [
     <Box flexDirection="row" flexWrap="nowrap">
       <Box flexShrink={0}>
@@ -427,8 +462,8 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
         </Text>
         <Text> </Text>
       </Box>
-      <Box flexShrink={0}>{prAnchor(table, view, handlers, pr.url, title)}</Box>
-      {listButton(table, handlers, LIST_GAP)}
+      <Box flexShrink={0}>{view.isSelected === true ? selectedTitle(table, handlers, pr.number, title) : prAnchor(table, view, handlers, pr.url, title)}</Box>
+      {navButtons(table, view, handlers, LIST_GAP)}
     </Box>,
     <Text wrap="truncate-end">
       {truncate(`${pr.headRefName} → ${pr.baseRefName}`, columns)}
@@ -440,17 +475,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
       {truncate(`${shortSha(pr.headOid)} · refreshed ${relativeTime(snapshot.at, view.nowMs)}`, columns)}
     </Text>,
     ...staleRows(table, view, snapshot),
-    ...backRows(table, view, handlers),
   ]
-}
-
-/** The back button, drawn only while the pane shows a pull request picked from the list. */
-function backRows(table: UiTable, view: View, handlers: Handlers): RenderElement[] {
-  const { Button } = table
-  const { back } = handlers
-  // While a confirmation waits, `b` belongs to its final step: no other button may take it.
-  if (view.isSelected !== true || back === undefined || view.pending !== null || view.hasPending === true) return []
-  return [<Button key="back" plain hotkey="b" label="back" onPress={() => back()} />]
 }
 
 /** The pane body for a view. */
@@ -467,8 +492,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
           {text}
         </Text>
         <Button key="refresh" plain hotkey="r" label="refresh" onPress={() => handlers.refresh()} />
-        {listButton(table, handlers)}
-        {backRows(table, view, handlers)}
+        {navButtons(table, view, handlers)}
       </Box>
     )
   }
@@ -571,11 +595,11 @@ export function paneRowCount(view: View): number {
   if (snapshot.kind !== 'pr' || status === null) {
     const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
     const wrapped = Math.max(1, Math.ceil(cellWidth(text) / Math.max(1, view.columns)))
-    return Math.max(MIN_PANE_ROWS, wrapped + 1 + (view.isSelected === true && view.pending === null ? BACK_ROWS : 0))
+    return Math.max(MIN_PANE_ROWS, wrapped + 1)
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS + (snapshot.stale ? 1 : 0) + (view.isSelected === true && view.pending === null ? BACK_ROWS : 0),
+    HEADER_ROWS + (snapshot.stale ? 1 : 0),
     mergeRowCount(view, pr, status, snapshot.account.login),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),

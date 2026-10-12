@@ -1,6 +1,6 @@
-// The list pane: the repository's open pull requests, grouped, one page at a time.
+// The list view of the pane: the repository's open pull requests, grouped, one page at a time.
 // A pull request takes two lines and a blank one: the title line (status symbol,
-// title, labels) and a dim line of facts. Both lines are Buttons that select it.
+// title, labels) and a dim line of facts, together one Button that opens it.
 
 import type { RenderElement } from 'claude-code'
 
@@ -137,19 +137,68 @@ function metaRuns(item: ListItem, nowMs: number): Run[] {
   return runs
 }
 
-function drawRun(table: UiTable, palette: Palette, run: Run): RenderElement {
+/** Colors of the focused row, raw so they read on light and dark themes alike. */
+export const FOCUS_BG = '#30363d'
+export const FOCUS_FG = '#e6edf3'
+export const FOCUS_DIM = '#8b949e'
+
+type LineProps = { color?: string; backgroundColor?: string; dimColor?: true; bold?: true }
+
+/** The color a run is meant to show in: its own, the dim grey for dim runs, else undefined (the foreground). */
+function segmentColor(palette: Palette, run: Run): string | undefined {
+  const own = run.hex ?? tone(palette, run.color)
+  if (own !== undefined) return own
+  return run.isDim === true ? FOCUS_DIM : undefined
+}
+
+/**
+ * The colors of a title-line piece that shows `shown` on the focus background. The engine
+ * marks a focused (or hovered) Button by inverting its first line, so the colors are drawn
+ * swapped: after the inverse the piece reads `shown` (else the focus foreground) on FOCUS_BG.
+ */
+function swapped(shown: string | undefined, isBold: boolean): LineProps {
+  return { color: FOCUS_BG, backgroundColor: shown ?? FOCUS_FG, ...(isBold ? { bold: true as const } : {}) }
+}
+
+/** One piece of the title line, with the swapped colors it takes in focus and under the pointer. */
+function titlePiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean): RenderElement {
   const { Text } = table
+  const isBold = run.isBold === true
+  const hover = swapped(segmentColor(palette, run), isBold)
+  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{run.text}</Text>
   return (
-    <Text color={run.hex ?? tone(palette, run.color)} bold={run.isBold === true ? true : undefined} dimColor={run.isDim === true ? true : undefined} wrap="truncate-end">
+    <Text color={run.hex ?? tone(palette, run.color)} bold={isBold ? true : undefined} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
       {run.text}
     </Text>
   )
 }
 
-/** The title line of a pull request: marker, status symbol, title (bold), labels. A Button that selects it. */
-function titleLine(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
-  const { Button, Text } = table
-  const isSelected = view.selectedNumber === item.number
+/**
+ * One piece of the facts line: its own colors at rest. The engine's inverse stops at the
+ * newline inside the piece that opens the line, and every later piece is inverted again,
+ * so those are drawn swapped like the title line; the opening piece takes the focus
+ * colors as they are.
+ */
+function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean, text = run.text, isOpening = false): RenderElement {
+  const { Text } = table
+  const hover = isOpening ? { color: FOCUS_DIM, backgroundColor: FOCUS_BG } : swapped(segmentColor(palette, run) ?? FOCUS_DIM, false)
+  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{text}</Text>
+  return (
+    <Text color={run.hex ?? tone(palette, run.color)} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
+      {text}
+    </Text>
+  )
+}
+
+/**
+ * A pull request: one Button of two lines, so the focus ring stops once per PR. The
+ * engine inverts every piece but the one that opens the facts line, from its newline on.
+ */
+function prRow(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
+  const { Box, Button, Text } = table
+  const { palette } = view
+  const key = `pr-${item.number}`
+  const isFocused = view.focusedKey === key
   // On a very narrow pane the draft prefix goes first; the title is dim anyway.
   const hasDraftPrefix = item.isDraft && columns - PREFIX_WIDTH - cellWidth(DRAFT) >= 4
   const room = Math.max(1, columns - PREFIX_WIDTH - (hasDraftPrefix ? cellWidth(DRAFT) : 0))
@@ -163,34 +212,24 @@ function titleLine(table: UiTable, view: ListView, handlers: ListHandlers, item:
     labels = labelRoom > 0 ? labelRuns(item, labelRoom) : []
   }
   const title = truncate(item.title, Math.max(1, room - (labels.length > 0 ? GAP_WIDTH + runsWidth(labels) : 0)))
-  const parts: RenderElement[] = [
-    <Text color={isSelected ? view.palette.pending : undefined} wrap="truncate-end">
-      {isSelected ? MARKER : NO_MARKER}
-    </Text>,
-    drawRun(table, view.palette, statusOf(item)),
-    <Text>{' '}</Text>,
-  ]
-  if (hasDraftPrefix) parts.push(drawRun(table, view.palette, { text: DRAFT, isDim: true }))
-  parts.push(drawRun(table, view.palette, { text: title, isBold: !item.isDraft, isDim: item.isDraft }))
-  if (labels.length > 0) {
-    parts.push(<Text>{GAP}</Text>)
-    for (const run of labels) parts.push(drawRun(table, view.palette, run))
-  }
+  const first: Run[] = [isFocused ? { text: MARKER, color: 'pending' } : { text: NO_MARKER }, statusOf(item), { text: ' ' }]
+  if (hasDraftPrefix) first.push({ text: DRAFT, isDim: true })
+  first.push({ text: title, isBold: !item.isDraft, isDim: item.isDraft })
+  if (labels.length > 0) first.push({ text: GAP }, ...labels)
+  const used = runsWidth(first)
+  first.push({ text: ' '.repeat(Math.max(0, columns - used)) })
+  const facts = fitRuns(metaRuns(item, view.nowMs), Math.max(1, columns - PREFIX_WIDTH))
+  const factsUsed = PREFIX_WIDTH + runsWidth(facts)
+  const children: RenderElement[] = first.map((run) => titlePiece(table, palette, run, isFocused))
+  children.push(factPiece(table, palette, { text: '' }, isFocused, `\n${' '.repeat(PREFIX_WIDTH)}`, true))
+  for (const run of facts) children.push(factPiece(table, palette, run, isFocused))
+  children.push(factPiece(table, palette, { text: '' }, isFocused, ' '.repeat(Math.max(0, columns - factsUsed))))
   return (
-    <Button key={`pr-${item.number}`} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
-      {parts}
-    </Button>
-  )
-}
-
-/** The facts line: indented under the title, dim, cut at the end. A second Button that selects the same pull request. */
-function metaLine(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
-  const { Button, Text } = table
-  const runs = fitRuns(metaRuns(item, view.nowMs), Math.max(1, columns - PREFIX_WIDTH))
-  return (
-    <Button key={`pr-${item.number}-meta`} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
-      {[<Text>{' '.repeat(PREFIX_WIDTH)}</Text>, ...runs.map((run) => drawRun(table, view.palette, run))]}
-    </Button>
+    <Box key={`row-${item.number}`} flexDirection="column">
+      <Button key={key} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
+        {children}
+      </Button>
+    </Box>
   )
 }
 
@@ -244,8 +283,7 @@ function footerButtons(view: ListView, handlers: ListHandlers, hasNext: boolean,
   if (hasPrev) buttons.push({ key: 'list-prev', hotkey: 'p', label: 'previous', onPress: () => handlers.prevPage() })
   if (isList) buttons.push({ key: 'list-drafts', hotkey: 'h', label: view.hideDrafts ? 'show drafts' : 'hide drafts', onPress: () => handlers.toggleDrafts() })
   buttons.push({ key: 'list-refresh', hotkey: 'r', label: 'refresh', onPress: () => handlers.refresh() })
-  if (view.selectedNumber !== null) buttons.push({ key: 'list-back', hotkey: 'b', label: 'back to branch PR', onPress: () => handlers.back() })
-  buttons.push({ key: 'list-close', hotkey: 'x', label: 'close', onPress: () => handlers.closeList() })
+  buttons.push({ key: 'list-close', hotkey: 'x', label: 'close', onPress: () => handlers.closePane() })
   return buttons
 }
 
@@ -330,8 +368,7 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
       current = entry.group
       lines.push(messageLine(table, view, headingLine(GROUP_HEADINGS[entry.group], columns)))
     }
-    lines.push(titleLine(table, view, handlers, entry.item, columns))
-    lines.push(metaLine(table, view, handlers, entry.item, columns))
+    lines.push(prRow(table, view, handlers, entry.item, columns))
     // One blank line between pull requests of a group, none after the last.
     if (page.rows[index + 1]?.group === entry.group) lines.push(blankLine(table))
   }

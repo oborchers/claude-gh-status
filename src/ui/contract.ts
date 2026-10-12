@@ -36,14 +36,14 @@ export type View = {
   counts?: ListCounts | null
 }
 
-/** What the list pane draws from. */
+/** What the list view draws from. */
 export type ListView = {
   list: PrList | null
   /** Zero-based page. */
   page: number
   hideDrafts: boolean
-  /** The pull request the detail pane shows, to mark its row; null for the branch's. */
-  selectedNumber: number | null
+  /** The key of the Button that holds the focus ring (`pr-<n>`); null until it is known. */
+  focusedKey: string | null
   counts: ListCounts | null
   nowMs: number
   columns: number
@@ -51,16 +51,14 @@ export type ListView = {
   palette: Palette
 }
 
-/** Handlers the list pane calls. */
+/** Handlers the list view calls. */
 export type ListHandlers = {
   selectPr(number: number): void
   nextPage(): void
   prevPage(): void
   toggleDrafts(): void
   refresh(): void
-  /** Back to the branch's pull request in the detail pane. */
-  back(): void
-  closeList(): void
+  closePane(): void
   openUrl(url: string): void
 }
 
@@ -102,8 +100,8 @@ export type Handlers = {
   selectMethod(method: MergeMethod): void
   /** Shows this pull request of the repository in the pane (the list's rows call it). */
   selectPr?(number: number): void
-  /** Leaves the selected pull request: the pane shows the branch's again. */
+  /** Leaves the selected pull request: the pane shows the list again. */
   back?(): void
-  /** Opens the list pane of open pull requests. */
+  /** Shows the list of open pull requests in the pane. */
   openList?(): void
 }

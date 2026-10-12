@@ -1296,7 +1296,7 @@ describe('a pull request picked from the list', () => {
   const bandProps = BAND_PROPS
   const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
 
-  test('/pr <number> opens the pane with the keyboard and shows that pull request, marked as selected', async ($, on) => {
+  test('/pr <number> opens the pane with the keyboard and shows that pull request', async ($, on) => {
     const world = worldWithPick(on)
     await start($, world)
     const ran = await runPr($, '14580')
@@ -1305,8 +1305,11 @@ describe('a pull request picked from the list', () => {
     expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
     expect(world.numberLookups()).toContain(14580)
     const pane = await showPane($)
-    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    expect(await sees(pane, /#14580 /)).toBe(true)
     expect(await pane.find({ key: 'back' })).toBeDefined()
+    // The header line of the pick is a Button keyed like the row it was opened from.
+    expect(await pane.find({ key: 'pr-14580' })).toBeDefined()
+    expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
     await pane.unmount()
   })
 
@@ -1344,20 +1347,18 @@ describe('a pull request picked from the list', () => {
     await pane.unmount()
   })
 
-  test('back returns to the branch pull request: no marker, no back button, the pick is dropped', async ($, on) => {
+  test('the header press of a pick only refreshes: no write, still the same pick', async ($, on) => {
     const world = worldWithPick(on)
     await start($, world)
     await runPr($, '14580')
     await world.clock.settle()
     const pane = await showPane($)
-    await pane.press({ key: 'back' })
-    await world.clock.settle()
-    expect(await sees(pane, /14640/)).toBe(true)
-    expect(await sees(pane, /\(selected\)/)).toBe(false)
-    expect(await pane.find({ key: 'back' })).toBeUndefined()
     const lookups = world.numberLookups().length
-    await world.clock.advance(120_000)
-    expect(world.numberLookups()).toHaveLength(lookups)
+    await pane.press({ key: 'pr-14580' })
+    await world.clock.settle()
+    expect(world.numberLookups().length).toBeGreaterThan(lookups)
+    expect(await sees(pane, /#14580 /)).toBe(true)
+    expect(writes(world)).toEqual([])
     await pane.unmount()
   })
 
@@ -1368,7 +1369,7 @@ describe('a pull request picked from the list', () => {
     await world.clock.settle()
     expect(world.numberLookups()).toEqual([])
     const pane = await showPane($)
-    expect(await sees(pane, /PR #14640 \(selected\)/)).toBe(true)
+    expect(await sees(pane, /#14640 /)).toBe(true)
     await pane.unmount()
   })
 
@@ -1394,7 +1395,9 @@ describe('a pull request picked from the list', () => {
     await start($, world)
     expect((await runPr($, '0')).text).toContain('not a pull request number')
     await runPr($, '14580')
-    expect((await runPr($, 'back')).text).toContain('this branch')
+    expect((await runPr($, 'back')).text).toContain('list')
+    expect((await runPr($, 'back')).text).toContain('nothing to go back from')
+    await world.clock.settle()
     expect(world.numberLookups().filter(number => number === 0)).toEqual([])
   })
 
@@ -1522,7 +1525,7 @@ describe('a pull request picked from the list', () => {
 
 // The list of open pull requests and the band's counts.
 
-const LIST = 'gh-status-list'
+const LIST = PANE
 
 /** Raw list nodes: #14551 (oldest) to #14580 (newest), every fifth one a draft, all by someone else. */
 const listNodes = (total: number): Record<string, unknown>[] =>
@@ -1545,7 +1548,7 @@ const listQueries = (world: World) => world.argvs.filter(argv => argv[1] === 'ap
 const countsQueries = (world: World) => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$yours')))
 
 const showList = ($: Engine) =>
-  $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, title: 'Open PRs', scroll: { offset: 0, bodyRows: 40 } } })
+  $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, scroll: { offset: 0, bodyRows: 40 } } })
 
 /** A world whose branch has no pull request and whose repository has 30 open ones. */
 const listWorld = (on: On, total = 30): World => {
@@ -1561,7 +1564,7 @@ describe('the list of open pull requests', () => {
     await start($, world)
     const ran = await runPr($, 'list')
     await world.clock.settle()
-    expect(world.opened).toContainEqual(expect.objectContaining({ id: LIST, title: 'Open PRs', focus: true }))
+    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, title: 'PR', focus: true }))
     const rows = (world.opened[0] as { rows?: number }).rows
     expect(rows).toBeGreaterThanOrEqual(6)
     expect(rows).toBeLessThanOrEqual(40)
@@ -1606,13 +1609,13 @@ describe('the list of open pull requests', () => {
     expect(await sees(ui, /#14580\b/)).toBe(true)
     expect(await sees(ui, /#14571\b/)).toBe(true)
     expect(await sees(ui, /#14570\b/)).toBe(false)
-    // Two buttons per pull request, ten pull requests per page.
+    // One button per pull request, ten pull requests per page.
     expect((await ui.findAll({ type: 'Button' })).filter(button => /^pr-\d+$/.test(String(button.key)))).toHaveLength(10)
-    expect((await ui.findAll({ type: 'Button' })).filter(button => /^pr-\d+-meta$/.test(String(button.key)))).toHaveLength(10)
+    expect((await ui.findAll({ type: 'Button' })).filter(button => /-meta$/.test(String(button.key)))).toHaveLength(0)
     await ui.unmount()
   })
 
-  test('pressing a row selects that pull request, opens the detail with the keyboard and keeps the list open', async ($, on) => {
+  test('pressing a row switches the same pane to that pull request; no second pane is opened', async ($, on) => {
     const world = listWorld(on)
     await start($, world)
     await runPr($, 'list')
@@ -1620,29 +1623,80 @@ describe('the list of open pull requests', () => {
     const ui = await showList($)
     await ui.press({ key: 'pr-14580' })
     await world.clock.settle()
-    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
-    expect(world.closed).not.toContain(LIST)
+    expect(world.opened.length).toBeGreaterThan(1)
+    expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
+    expect(world.opened.at(-1)).toMatchObject({ id: PANE, focus: true })
+    expect(world.closed).toEqual([])
     expect(world.numberLookups()).toContain(14580)
-    const detail = await showPane($)
-    expect(await sees(detail, /PR #14580 \(selected\)/)).toBe(true)
-    await detail.unmount()
+    // The same mounted pane now draws the detail.
+    expect(await sees(ui, /#14580 /)).toBe(true)
+    expect(await ui.find({ key: 'back' })).toBeDefined()
+    expect(await ui.find({ key: 'list-next' })).toBeUndefined()
     await ui.unmount()
   })
 
-  test('pressing the facts line of a row selects that pull request too', async ($, on) => {
-    const world = listWorld(on)
-    await start($, world)
-    await runPr($, 'list')
-    await world.clock.settle()
-    const ui = await showList($)
-    await ui.press({ key: 'pr-14580-meta' })
-    await world.clock.settle()
-    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
-    expect(world.numberLookups()).toContain(14580)
-    const detail = await showPane($)
-    expect(await sees(detail, /PR #14580 \(selected\)/)).toBe(true)
-    await detail.unmount()
-    await ui.unmount()
+  describe('back to the list', () => {
+    for (const key of ['back', 'pane-list']) {
+      test(`${key} (b or l) shows the list again in the same pane, the ring on the row it was opened from`, async ($, on) => {
+        const world = listWorld(on)
+        await start($, world)
+        await runPr($, 'list')
+        await world.clock.settle()
+        const ui = await showList($)
+        await ui.press({ key: 'pr-14580' })
+        await world.clock.settle()
+        const opens = world.opened.length
+        const lookups = world.numberLookups().length
+        await ui.press({ key })
+        await world.clock.settle()
+        // Re-opened as the list: sized to its page, the same pane, no focus request.
+        expect(world.opened.length).toBe(opens + 1)
+        expect(world.opened.at(-1)).toMatchObject({ id: PANE, rows: 34 })
+        expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
+        expect(await ui.find({ key: 'list-next' })).toBeDefined()
+        expect(await ui.find({ key: 'back' })).toBeUndefined()
+        // The row it was opened from carries the focus marker.
+        expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
+        expect(await sees(ui, /▸ .*Change 14579/)).toBe(false)
+        // The pick is dropped: it is no longer polled.
+        await world.clock.advance(120_000)
+        expect(world.numberLookups()).toHaveLength(lookups)
+        await ui.unmount()
+      })
+    }
+
+    test('the page and the draft filter stay, and the list is read again right away', async ($, on) => {
+      const world = listWorld(on)
+      await start($, world)
+      await runPr($, 'list')
+      await world.clock.settle()
+      const ui = await showList($)
+      await ui.press({ key: 'list-next' })
+      await ui.press({ key: 'pr-14570' })
+      await world.clock.settle()
+      const reads = listQueries(world).length
+      await ui.press({ key: 'back' })
+      await world.clock.settle()
+      expect(listQueries(world).length).toBe(reads + 1)
+      expect(await sees(ui, /#14570\b/)).toBe(true)
+      expect(await sees(ui, /#14580\b/)).toBe(false)
+      await ui.unmount()
+    })
+
+    test('/pr back goes to the list too', async ($, on) => {
+      const world = listWorld(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'back')
+      await world.clock.settle()
+      expect(world.opened.at(-1)).toMatchObject({ id: PANE })
+      const ui = await showList($)
+      expect(await ui.find({ key: 'list-next' })).toBeDefined()
+      expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
+      await world.clock.settle()
+      await ui.unmount()
+    })
   })
 
   test('n and p page through the list and stop at both ends', async ($, on) => {
@@ -1700,6 +1754,48 @@ describe('the list of open pull requests', () => {
     expect(world.closed).toContain(LIST)
     await world.clock.advance(300_000)
     expect(listQueries(world)).toHaveLength(3)
+    await ui.unmount()
+  })
+
+  test('the list is read only while the pane shows the list: a pull request in the pane stops it, back starts it again', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(1)
+    const ui = await showList($)
+    await ui.press({ key: 'pr-14580' })
+    await world.clock.settle()
+    await world.clock.advance(300_000)
+    expect(listQueries(world)).toHaveLength(1)
+    await ui.press({ key: 'back' })
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(2)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(3)
+    await ui.unmount()
+  })
+
+  test('closing the pane stops the list and drops the pick; the next /pr sets the view explicitly', async ($, on) => {
+    const world = listWorld(on)
+    world.listNodes = listNodes(30)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'pr-14580' })
+    await world.clock.settle()
+    await runPr($, 'close')
+    await world.clock.settle()
+    const lookups = world.numberLookups().length
+    const reads = listQueries(world).length
+    await world.clock.advance(300_000)
+    expect(world.numberLookups()).toHaveLength(lookups)
+    expect(listQueries(world)).toHaveLength(reads)
+    // The branch has no pull request: /pr shows the list again, not the pick that was left.
+    await runPr($)
+    await world.clock.settle()
+    expect(await ui.find({ key: 'list-next' })).toBeDefined()
     await ui.unmount()
   })
 
@@ -1787,7 +1883,7 @@ describe('the list of open pull requests', () => {
     await runPr($, 'list')
     await world.clock.settle()
     const ui = await showList($)
-    for (const key of ['list-next', 'list-prev', 'list-drafts', 'list-refresh', 'pr-14580', 'list-back']) {
+    for (const key of ['list-next', 'list-prev', 'list-drafts', 'list-refresh', 'pr-14580', 'back']) {
       await ui.press({ key })
       await world.clock.settle()
     }
@@ -2229,7 +2325,7 @@ describe('reviews', () => {
       expect(ran.text).toContain('Request changes on cli/cli #14580')
       const pane = await showPane($)
       await typeInto(pane, world, 'selected one')
-      expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+      expect(await sees(pane, /#14580 /)).toBe(true)
       await world.clock.advance(SETTLED_MS)
       const before = world.argvs.length
       await pane.press({ key: 'confirm' })
@@ -2405,7 +2501,7 @@ describe('safety: the fresh snapshot goes to the slot it belongs to', () => {
     expect(queries.some(query => query.includes('$branch'))).toBe(true)
     expect(queries.some(query => query.includes('$number: Int!'))).toBe(false)
     const pane = await showPane($)
-    expect(await sees(pane, /PR #14640 \(selected\)/)).toBe(true)
+    expect(await sees(pane, /#14640 /)).toBe(true)
     await pane.unmount()
     await band.unmount()
   })
@@ -2578,10 +2674,10 @@ describe('safety: a change of repository drops the pick and the pending write', 
     await runPr($, '14580')
     await world.clock.settle()
     const pane = await showPane($)
-    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    expect(await sees(pane, /#14580 /)).toBe(true)
     await $.classic.CwdChanged({ old_cwd: '/work/cli', new_cwd: '/work/cli/sub' })
     await world.clock.settle()
-    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    expect(await sees(pane, /#14580 /)).toBe(true)
     await pane.unmount()
   })
 

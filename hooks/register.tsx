@@ -27,8 +27,6 @@ import type { Handlers, ListHandlers, ListView, UiTable, View } from '../src/ui/
 
 const PANE_ID = 'gh-status'
 const PANE_TITLE = 'PR'
-const LIST_ID = 'gh-status-list'
-const LIST_TITLE = 'Open PRs'
 /** Width the opening row count is estimated at; button wrapping is the only thing it changes. */
 const PANE_ROWS_COLUMNS = 80
 
@@ -44,7 +42,7 @@ const FALLBACK_COMMAND = 'gh-pr'
 const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
 const PLUGIN_NAME = 'gh-status'
 
-const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x) | approve | changes | ready]`
+const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back (to the list) | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x) | approve | changes | ready]`
 
 /** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
 function commandNameOf(value: unknown): string {
@@ -84,6 +82,8 @@ const listState = atom({ plugin: 'gh-status', key: 'list' } as const, null)
 const listPageState = atom({ plugin: 'gh-status', key: 'listPage' } as const, 0)
 const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } as const, false)
 const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
+const paneViewState = atom({ plugin: 'gh-status', key: 'paneView' } as const, 'detail')
+const paneFocusState = atom({ plugin: 'gh-status', key: 'paneFocus' } as const, null)
 
 /**
  * The timers of the running session, at module scope: a second session.start (hot reload,
@@ -113,11 +113,11 @@ const ownToast: { prefix: string | null; untilMs: number } = { prefix: null, unt
 type Live = {
   /** Refreshes the branch's pull request and the picked one, then re-arms the timer for the interval the new state asks for. */
   run(reason: RefreshReason): Promise<void>
-  /** Reads the repository's open pull requests now (single flight) and, while the list pane is open, keeps reading them. */
+  /** Reads the repository's open pull requests now (single flight) and, while the pane shows the list, keeps reading them. */
   runList(): Promise<void>
-  /** Stops the list polling; the list pane was closed. */
+  /** Stops the list polling; the pane closed or shows a pull request. */
   stopList(): void
-  /** The directory changed: refreshes the branch's pull request, the counts and, while the list pane is open, the list. */
+  /** The directory changed: refreshes the branch's pull request, the counts and, while the pane shows the list, the list. */
   cwdChanged(): Promise<void>
 }
 
@@ -193,12 +193,11 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
 }
 
 async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<ListView> {
-  const selected = await read($, selectedState)
   return {
     list: await read($, listState),
     page: await read($, listPageState),
     hideDrafts: await read($, listHideDraftsState),
-    selectedNumber: selected === null ? null : selected.number,
+    focusedKey: await read($, paneFocusState),
     counts: await read($, countsState),
     nowMs: await $.clock.now(),
     columns,
@@ -219,8 +218,9 @@ async function openUrl($: EngineInterface, url: string): Promise<void> {
   }
 }
 
-/** Opens the detail pane, with the keyboard when asked (granted from an empty prompt). */
+/** Opens the pane on its detail view, with the keyboard when asked (granted from an empty prompt). */
 async function showPane($: EngineInterface, isFocused: boolean): Promise<UiOpenResult> {
+  await update($, paneViewState, () => 'detail')
   const { snapshot } = await subjectSnapshot($, 'pane')
   // Docked, the pane takes the height of the screen; inline it would get a third and cut off,
   // so ask for what the content needs. A size the person dragged still wins (engine).
@@ -436,8 +436,8 @@ async function dropIfRepoChanged($: EngineInterface, slug: string | null): Promi
 
 /**
  * Shows another open pull request of the repository in the pane: sets the pick, drops
- * the confirmation and result of the one before, opens the pane with the keyboard and
- * refreshes. The band keeps showing the branch's pull request.
+ * the confirmation and result of the one before, switches the same pane to its detail
+ * view and refreshes. The band keeps showing the branch's pull request.
  */
 async function selectPr($: EngineInterface, live: Live | null, number: number): Promise<string> {
   if (!Number.isSafeInteger(number) || number < 1) return `${number} is not a pull request number.`
@@ -449,27 +449,56 @@ async function selectPr($: EngineInterface, live: Live | null, number: number): 
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
   await update($, outcomeState, () => null)
+  // The list is not on screen any more: it stops being read.
+  if (live !== null) live.stopList()
   const opened = await showPane($, true)
   if (live !== null) void live.run('command')
   return opened.isPlaced ? `Showing PR #${number} in the pane.` : `PR #${number} selected but the pane is not drawn yet: ${opened.reason}`
 }
 
-/** Leaves the picked pull request: the pane shows the branch's again. */
-async function back($: EngineInterface, live: Live | null): Promise<void> {
-  if (confirmGuard.isBusy) return
+/** Drops the pick with its snapshot, confirmation and result; false when nothing was picked. */
+async function leaveSelection($: EngineInterface): Promise<boolean> {
+  const selected = await read($, selectedState)
+  if (selected === null) return false
   await update($, selectedState, () => null)
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
   await update($, outcomeState, () => null)
-  if (live !== null) void live.run('command')
+  return true
 }
 
-/** Opens the list pane with the keyboard, sized to its current page, and reads the list now. */
-async function openList($: EngineInterface, live: Live | null): Promise<string> {
+/**
+ * Leaves the picked pull request: the same pane shows the list again, the ring back on
+ * the row it was opened from. The old list data stays visible until the fresh one arrives.
+ */
+async function back($: EngineInterface, live: Live | null): Promise<void> {
+  if (confirmGuard.isBusy) return
+  const selected = await read($, selectedState)
+  await leaveSelection($)
+  const key = selected === null ? null : `pr-${selected.number}`
+  if (key !== null) await update($, paneFocusState, () => key)
+  await showList($, live, false)
+  if (key === null) return
+  try {
+    await $.ui.focus({ requestId: PANE_ID, key })
+  } catch {
+    // the ring stays where the engine put it; the marker already follows paneFocus
+  }
+}
+
+/** Switches the pane to its list view, with the keyboard when asked, sized to its current page, and reads the list now. */
+async function showList($: EngineInterface, live: Live | null, isFocused: boolean): Promise<UiOpenResult> {
+  await update($, paneViewState, () => 'list')
   const rows = listRowCount(await read($, listState), await read($, listPageState), await read($, listHideDraftsState))
-  const opened = await $.ui.open({ id: LIST_ID, title: LIST_TITLE, rows, focus: true })
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...(isFocused ? { focus: true } : {}) })
   if (live !== null) void live.runList()
-  return opened.isPlaced ? 'Open PRs listed in the pane.' : `Open PRs pane opened but not drawn yet: ${opened.reason}`
+  return opened
+}
+
+/** Shows the list of open pull requests in the pane, with the keyboard. */
+async function openList($: EngineInterface, live: Live | null): Promise<string> {
+  const opened = await showList($, live, true)
+  return opened.isPlaced ? 'Open PRs listed in the pane.' : `Open PRs listed but the pane is not drawn yet: ${opened.reason}`
 }
 
 async function setPage($: EngineInterface, step: 1 | -1): Promise<void> {
@@ -482,7 +511,7 @@ async function toggleDrafts($: EngineInterface): Promise<void> {
   await update($, listPageState, () => 0)
 }
 
-/** The handler closures of the list pane. They read and open; none of them writes to GitHub. */
+/** The handler closures of the list view. They read and open; none of them writes to GitHub. */
 function listHandlersFor($: EngineInterface, live: Live | null): ListHandlers {
   return {
     selectPr: number => void selectPr($, live, number),
@@ -492,8 +521,7 @@ function listHandlersFor($: EngineInterface, live: Live | null): ListHandlers {
     refresh: () => {
       if (live !== null) void live.runList()
     },
-    back: () => void back($, live),
-    closeList: () => void $.ui.close({ id: LIST_ID }),
+    closePane: () => void closePane($),
     openUrl: url => void openUrl($, url),
   }
 }
@@ -780,7 +808,8 @@ export const register: Register = (on, options) => {
       return flight
     }
     const tickList = async (): Promise<void> => {
-      if (!(await $.ui.panes()).some(pane => pane.id === LIST_ID)) return stopList()
+      // Read only while the pane is open and shows the list.
+      if (!(await $.ui.panes()).some(pane => pane.id === PANE_ID) || (await read($, paneViewState)) !== 'list') return stopList()
       await runList()
     }
 
@@ -851,12 +880,16 @@ export const register: Register = (on, options) => {
       // No pull request for the branch (none yet, or a detached HEAD): the list is the useful view.
       const branch = await read($, snapshotState)
       if (branch.kind === 'no-pr' || branch.kind === 'detached') return { text: await openList($, live) }
+      if (confirmGuard.isBusy) return { text: 'A confirmation is in progress, try again in a moment.' }
+      // The branch's pull request: a pick made in the list gives way to it.
+      await leaveSelection($)
       return { text: await openPane($, live) }
     }
     if (/^#?\d+$/.test(argument)) return { text: await selectPr($, live, Number(argument.replace('#', ''))) }
     if (argument === 'back') {
+      if ((await read($, selectedState)) === null) return { text: 'No other pull request is shown, nothing to go back from.' }
       await back($, live)
-      return { text: 'Showing the pull request of this branch.' }
+      return { text: 'Back to the list of open PRs.' }
     }
     if (argument === 'refresh') {
       if (live === null) return { text: 'gh-status has not started yet.' }
@@ -925,9 +958,14 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // One pane, two views: the list of open pull requests and the detail of one.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     try {
+      if ((await read($, paneViewState)) === 'list') {
+        const listView = await readListView($, e.props.bodyColumns, e.surface, palette)
+        return renderList($.ui.resolve(e), listView, listHandlersFor($, live))
+      }
       const view = await readView($, e.props.bodyColumns, e.surface, palette, 'pane')
       return renderPane($.ui.resolve(e), view, handlersFor($, live, e.surface, 'pane'))
     } catch {
@@ -935,27 +973,19 @@ export const register: Register = (on, options) => {
     }
   })
 
-  on('ui.render', { component: 'Pane', requestId: LIST_ID }, async ($, e, next) => {
-    if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
-    try {
-      const view = await readListView($, e.props.bodyColumns, e.surface, palette)
-      return renderList($.ui.resolve(e), view, listHandlersFor($, live))
-    } catch {
-      return next(e)
-    }
-  })
-
-  // Closing the pane (its mark, `close`) also drops what it asked to confirm, and the pick it showed:
-  // the picked pull request is no longer polled once nobody looks at it.
-  on('ui.close', { id: PANE_ID }, async ($, e, next) => {
-    await update($, pendingState, () => null)
-    await update($, selectedState, () => null)
-    await update($, selectedSnapshotState, () => null)
+  // Where the focus ring is, so the list can draw its row as focused.
+  on('ui.focus', async ($, e, next) => {
+    if (e.requestId === PANE_ID) await update($, paneFocusState, () => e.element ?? null)
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('ui.close', { id: LIST_ID }, async ($, e, next) => {
+  // Closing the pane (its mark, `close`, `x`) drops what it asked to confirm, the pick it showed
+  // and the list polling: nothing is polled once nobody looks at it.
+  on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     if (live !== null) live.stopList()
+    await update($, pendingState, () => null)
+    await update($, selectedState, () => null)
+    await update($, selectedSnapshotState, () => null)
     return next(e)
   }).catch(($, e, next) => next(e))
 }
