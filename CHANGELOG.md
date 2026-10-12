@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last five comments (by creation or edit time) is shown, so a review bot that updates an older comment in place surfaces.
+- Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments (by creation or edit time) is shown, so a review bot that updates an older comment in place surfaces.
 - The fast check also watches `pulls/{n}/comments`, so review comment edits trigger a refresh. Edits are only seen within the first 100 comments of a list (GitHub lists oldest first).
+
+### Fixed
+
+- Comment edits are no longer missed on bot-heavy pull requests: the last 100 comments are read (was 5), so a bot that updates an early comment hours later surfaces.
+- An edit within 60 seconds of a comment's creation (a bot's automatic post-processing) is no longer shown as "edited", counted as activity, or toasted as `comment updated`.
 
 ## [0.1.0] - Unreleased
 

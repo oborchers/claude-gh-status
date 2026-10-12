@@ -2,8 +2,9 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
-import type { RepoLocation } from '../src/model'
-import { PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, normalize, selectCandidate, statusContextState } from '../src/query'
+import type { CommentRef, PullRequest, RepoLocation } from '../src/model'
+import { activityAt, commentWhen, transitions } from '../src/status'
+import { EDIT_GRACE_MS, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, normalize, selectCandidate, statusContextState } from '../src/query'
 import {
   prAdmin,
   prAutoMerge,
@@ -22,6 +23,7 @@ import {
   prStatusContexts,
   prFailing,
 } from './fixtures/pr-raw'
+import { makeSnapshot } from './fixtures/pr-builder'
 
 const cliLocation: RepoLocation = { cwd: '/work/cli', branch: 'feature', owner: 'cli', repo: 'cli', pinnedLogin: null }
 
@@ -180,8 +182,8 @@ describe('normalize', () => {
       return raw
     }
 
-    test('the queries ask for lastEditedAt on the last five comments', () => {
-      expect(PR_DETAIL_QUERY).toContain('comments(last: 5) { totalCount nodes { author { login } createdAt lastEditedAt url } }')
+    test('the queries ask for lastEditedAt on the last 100 comments and the last 5 per thread', () => {
+      expect(PR_DETAIL_QUERY).toContain('comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }')
       expect(PR_DETAIL_QUERY).toContain('comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } }')
     })
 
@@ -210,6 +212,43 @@ describe('normalize', () => {
       expect(normalize(newer, cliLocation).pr?.lastComment?.author).toBe('anna')
       const tie = withComments([comment('a', '2026-10-01T00:00:00Z', null, 1), comment('b', '2026-10-01T00:00:00Z', null, 2)])
       expect(normalize(tie, cliLocation).pr?.lastComment?.author).toBe('b')
+    })
+
+    test('an old comment edited a day later wins among seven comments', () => {
+      const comments = [
+        comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-02T07:00:00Z', 1),
+        comment('tracker-bot', '2026-10-01T08:01:00Z', '2026-10-02T07:01:00Z', 2),
+        comment('anna', '2026-10-01T09:00:00Z', null, 3),
+        comment('ben', '2026-10-01T10:00:00Z', null, 4),
+        comment('anna', '2026-10-01T11:00:00Z', null, 5),
+        comment('ben', '2026-10-01T12:00:00Z', null, 6),
+        comment('anna', '2026-10-01T13:00:00Z', null, 7),
+      ]
+      const last = normalize(withComments(comments), cliLocation).pr?.lastComment
+      expect(last?.author).toBe('tracker-bot')
+      expect(last?.editedAt).toBe('2026-10-02T07:01:00Z')
+    })
+
+    test('an edit within the grace period is no edit; one exactly at the threshold counts', () => {
+      expect(EDIT_GRACE_MS).toBe(60_000)
+      const quick = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:00:02Z', 1)])
+      const quickRef = normalize(quick, cliLocation).pr?.lastComment
+      expect(quickRef?.editedAt).toBeNull()
+      expect(activityAt(quickRef as CommentRef)).toBe('2026-10-01T08:00:00Z')
+      expect(commentWhen(quickRef as CommentRef, Date.parse('2026-10-01T09:00:00Z'))).not.toContain('edited')
+      const justUnder = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:00:59Z', 1)])
+      expect(normalize(justUnder, cliLocation).pr?.lastComment?.editedAt).toBeNull()
+      const exact = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:01:00Z', 1)])
+      expect(normalize(exact, cliLocation).pr?.lastComment?.editedAt).toBe('2026-10-01T08:01:00Z')
+    })
+
+    test('a quick bot edit raises no comment updated toast', () => {
+      const prOf = (edited: string | null) => normalize(withComments([comment('ci-bot', '2026-10-01T08:00:00Z', edited, 1)]), cliLocation).pr as PullRequest
+      const before = makeSnapshot(prOf(null))
+      const quick = makeSnapshot(prOf('2026-10-01T08:00:02Z'))
+      expect(transitions(before, quick, 'me').filter((t) => t.includes('comment updated'))).toEqual([])
+      const late = makeSnapshot(prOf('2026-10-01T09:00:00Z'))
+      expect(transitions(before, late, 'me').filter((t) => t.includes('comment updated'))).toHaveLength(1)
     })
 
     test('a thread surfaces its most recently active comment', () => {

@@ -64,7 +64,7 @@ export const PR_DETAIL_QUERY = `query($id: ID!) {
       reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug organization { login } } ... on Bot { login } } } }
       latestReviews(first: 20) { nodes { author { login } state submittedAt } }
       reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } } } }
-      comments(last: 5) { totalCount nodes { author { login } createdAt lastEditedAt url } }
+      comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { nodes {
         ${CONTEXT_FIELDS}
       } } } } } }
@@ -245,12 +245,22 @@ function checksOf(rollup: unknown): Check[] {
   return checks
 }
 
+/**
+ * Bots often post a comment and rewrite it moments later (automatic
+ * post-processing, 1 to 2 s after creation). Such an edit is part of posting,
+ * not an update, so an edit closer to creation than this is treated as no edit.
+ * Normalizing here keeps status, toasts and the pane unchanged.
+ */
+export const EDIT_GRACE_MS = 60_000
+
 function toCommentRef(node: Obj | undefined): CommentRef | null {
   if (node === undefined) return null
   const createdAt = asStr(node.createdAt)
   const url = asStr(node.url)
   if (createdAt === null || url === null) return null
-  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: asStr(node.lastEditedAt), url }
+  const lastEditedAt = asStr(node.lastEditedAt)
+  const isEdited = lastEditedAt !== null && Date.parse(lastEditedAt) - Date.parse(createdAt) >= EDIT_GRACE_MS
+  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: isEdited ? lastEditedAt : null, url }
 }
 
 /**
