@@ -311,7 +311,7 @@ function prView(overrides: Partial<PullRequest>, columns: number, jobs: JobDetai
 }
 
 type Surface = (typeof SURFACES)[number]
-type Mounted = Pick<MountedOf<Surface, 'Pane'>, 'drawn' | 'find' | 'findAll' | 'press' | 'select' | 'unmount'>
+type Mounted = Pick<MountedOf<Surface, 'Pane'>, 'drawn' | 'find' | 'findAll' | 'press' | 'select' | 'input' | 'unmount'>
 type Current = { view: View; handlers: Handlers }
 
 /** Registers one hook per component, once, before the test first touches `$`; each draw sets what they render. */
@@ -1251,7 +1251,7 @@ describe('the pane outcome line', () => {
 describe('paneRowCount', () => {
   test('matches the rows renderPane draws, within the cap', async ($, on) => {
     const rig = createRig(on)
-    const view = prView({ checks: [failedRequired, makeCheck({ name: 'docs' })], mergeStateStatus: 'blocked' }, 80)
+    const view = prView({ checks: [failedRequired, makeCheck({ name: 'docs' })], mergeStateStatus: 'blocked', author: 'me' }, 80)
     const ui = await rig.pane($, 'terminal', view, handlersFor([]))
     const drawn = rowsOf(await ui.drawn()).join('\n').split('\n').length
     // sections are separated by one blank row, which the test layout does not draw
@@ -1445,5 +1445,110 @@ describe('the list entry points', () => {
     const rig = createRig(on)
     const ui = await rig.pane($, 'terminal', viewFor(noPr, 80), handlersFor([], { openList: () => {} }))
     expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['r', 'l'])
+  })
+})
+
+describe('the review buttons and confirmation', () => {
+  const everyReview = { requestApprove: () => {}, requestChanges: () => {}, requestReady: () => {} }
+
+  for (const surface of SURFACES) {
+    test(`the pane offers v approve and w request changes for someone else's PR, and pressing them calls the handlers on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: string[] = []
+      const handlers = handlersFor(calls, { requestApprove: () => void calls.push('requestApprove'), requestChanges: () => void calls.push('requestChanges'), requestReady: () => void calls.push('requestReady') })
+      const ui = await rig.pane($, surface, prView({ author: 'octocat' }, 100), handlers)
+      const text = await textOf(ui)
+      expect(text).toContain('v: approve')
+      expect(text).toContain('w: request changes')
+      expect(text).not.toContain('e: ready for review')
+      expect((await ui.find({ key: 'approve' }))?.props).toMatchObject({ hotkey: 'v' })
+      expect((await ui.find({ key: 'request-changes' }))?.props).toMatchObject({ hotkey: 'w' })
+      await ui.press({ key: 'approve' })
+      await ui.press({ key: 'request-changes' })
+      expect(calls).toEqual(['requestApprove', 'requestChanges'])
+      await ui.unmount()
+    })
+
+    test(`the pane offers e ready for review for an own draft, and no review on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: string[] = []
+      const ui = await rig.pane($, surface, prView({ author: 'me', isDraft: true }, 100), handlersFor(calls, { ...everyReview, requestReady: () => void calls.push('requestReady') }))
+      const text = await textOf(ui)
+      expect(text).toContain('e: ready for review')
+      expect(text).not.toContain('v: approve')
+      expect(text).not.toContain('w: request changes')
+      await ui.press({ key: 'ready-for-review' })
+      expect(calls).toEqual(['requestReady'])
+      await ui.unmount()
+    })
+  }
+
+  test('an own PR, a draft of someone else, a merged PR and a missing handler draw no review button', async ($, on) => {
+    const rig = createRig(on)
+    const keys = async (overrides: Partial<PullRequest>, handlers: Partial<Handlers> = everyReview) => {
+      const ui = await rig.pane($, 'terminal', prView(overrides, 100), handlersFor([], handlers))
+      const found = hotkeysOf(await ui.findAll({ type: 'Button' }))
+      await ui.unmount()
+      return found
+    }
+    for (const overrides of [{ author: 'me' }, { author: 'octocat', isDraft: true }, { author: 'octocat', state: 'merged' as const }, { author: 'octocat', state: 'closed' as const }, { author: null }]) {
+      const found = await keys(overrides)
+      expect(found).not.toContain('v')
+      expect(found).not.toContain('w')
+    }
+    const none = await keys({ author: 'octocat' }, {})
+    expect(none).not.toContain('v')
+    expect(none).not.toContain('w')
+  })
+
+  for (const surface of SURFACES) {
+    test(`the pane draws the confirmation with the field in the Merge section on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: string[] = []
+      const view = prView({ author: 'octocat', checks: [makeCheck()] }, 100)
+      const pending = buildPending('request-changes', view.snapshot, undefined, 0, 'rename x')
+      if (pending === null) throw new Error('request-changes is not offered')
+      const ui = await rig.pane($, surface, { ...view, pending }, handlersFor(calls, { setReviewBody: text => void calls.push(`setReviewBody ${text}`) }))
+      const text = await textOf(ui)
+      expect(text).toContain('Request changes on acme/app #42')
+      expect(text).toContain('Will post:')
+      expect(text).toContain('rename x')
+      expect(text).toContain('y: request changes #42')
+      expect(await ui.find({ key: 'review-body' })).toBeDefined()
+      expect(await ui.find({ key: 'approve' })).toBeUndefined()
+      expect(await ui.find({ key: 'refresh' })).toBeUndefined()
+      await ui.input({ key: 'review-body', text: 'rename y' })
+      expect(calls).toEqual(['setReviewBody rename y'])
+      await ui.press({ key: 'confirm' })
+      expect(calls).toEqual(['setReviewBody rename y', 'confirmPending false'])
+      await ui.unmount()
+    })
+
+    test(`the band shows the short confirm controls for a pending review on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: string[] = []
+      for (const [kind, prompt] of [['approve', 'approve #42?'], ['request-changes', 'request changes #42?']] as const) {
+        const view = prView({ author: 'octocat' }, 120)
+        const pending = buildPending(kind, view.snapshot, undefined, 0, 'x')
+        if (pending === null) throw new Error(`${kind} is not offered`)
+        const ui = await rig.band($, surface, { ...view, pending }, handlersFor(calls))
+        const text = await textOf(ui)
+        expect(text).toContain(prompt)
+        expect(text).toContain('y: confirm')
+        expect(text).toContain('n: cancel')
+        expect(await ui.find({ key: 'review-body' })).toBeUndefined()
+        expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['y', 'n'])
+        await ui.unmount()
+      }
+    })
+  }
+
+  test('the pane row count covers the review confirmation and its buttons', () => {
+    const view = prView({ author: 'octocat', checks: [makeCheck()] }, 100)
+    const pending = buildPending('request-changes', view.snapshot, undefined, 0, 'x')
+    if (pending === null) throw new Error('request-changes is not offered')
+    const confirmRows = confirmRowCount({ ...view, pending }, pending)
+    expect(confirmRows).toBeGreaterThanOrEqual(8)
+    expect(paneRowCount({ ...view, pending })).toBeGreaterThanOrEqual(confirmRows + 4)
   })
 })

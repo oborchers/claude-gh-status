@@ -65,7 +65,7 @@ const CONTEXT_FIELDS = `__typename
 export const PR_DETAIL_QUERY = `query($id: ID!) {
   node(id: $id) {
     ... on PullRequest {
-      id number state title url isDraft mergedBy { login } mergedAt closedAt headRefName headRefOid
+      id number state title url isDraft author { login } mergedBy { login } mergedAt closedAt headRefName headRefOid
       baseRefName mergeable mergeStateStatus reviewDecision
       isInMergeQueue isMergeQueueEnabled
       mergeQueueEntry { position state estimatedTimeToMerge headCommit { oid statusCheckRollup { state contexts(first: 100) { nodes {
@@ -441,6 +441,7 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     url: asStr(node.url) ?? '',
     isPrivate: repository?.isPrivate === true,
     isDraft: asBool(node.isDraft),
+    author: asStr(asObj(node.author)?.login),
     mergedBy: asStr(asObj(node.mergedBy)?.login),
     mergedAt: asStr(node.mergedAt),
     closedAt: asStr(node.closedAt),

@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandInfo, EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
-import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
+import { CHANGES_NEED_TEXT, RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isReviewTextMissing, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
 import { fastCheck } from '../src/etag'
 import { runGh, tokenFor } from '../src/gh'
@@ -44,7 +44,7 @@ const FALLBACK_COMMAND = 'gh-pr'
 const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
 const PLUGIN_NAME = 'gh-status'
 
-const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
+const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x) | approve | changes | ready]`
 
 /** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
 function commandNameOf(value: unknown): string {
@@ -52,7 +52,7 @@ function commandNameOf(value: unknown): string {
 }
 
 /** The write subcommands and their short aliases. */
-const WRITE_COMMANDS: Record<string, 'merge' | 'enqueue' | 'dequeue' | 'auto' | 'admin-merge'> = {
+const WRITE_COMMANDS: Record<string, 'merge' | 'enqueue' | 'dequeue' | 'auto' | 'admin-merge' | 'approve' | 'request-changes' | 'ready-for-review'> = {
   merge: 'merge',
   m: 'merge',
   queue: 'enqueue',
@@ -63,6 +63,9 @@ const WRITE_COMMANDS: Record<string, 'merge' | 'enqueue' | 'dequeue' | 'auto' | 
   a: 'auto',
   admin: 'admin-merge',
   x: 'admin-merge',
+  approve: 'approve',
+  changes: 'request-changes',
+  ready: 'ready-for-review',
 }
 
 /** How long after the mod's own write its matching transition toast is still dropped. */
@@ -80,7 +83,11 @@ const selectedSnapshotState = atom({ plugin: 'gh-status', key: 'selectedSnapshot
 const listState = atom({ plugin: 'gh-status', key: 'list' } as const, null)
 const listPageState = atom({ plugin: 'gh-status', key: 'listPage' } as const, 0)
 const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } as const, false)
+const reviewBodyState = atom({ plugin: 'gh-status', key: 'reviewBody' } as const, '')
 const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
+
+/** Longest review text the field keeps (GitHub's own limit is 65536). */
+const MAX_REVIEW_CHARS = 65_536
 
 /** One confirm press at a time: a second press while one is being handled is dropped. */
 const confirmGuard = { isBusy: false }
@@ -246,10 +253,11 @@ async function requestAction($: EngineInterface, kind: ActionKind, subject: Subj
   const openedAt = await $.clock.now()
   const pending = buildPending(kind, snapshot, undefined, openedAt)
   if (pending === null) {
-    const offered = availableActions(snapshot.pr)
+    const offered = availableActions(snapshot.pr, snapshot.account.login)
     return `That is not available for PR #${snapshot.pr.number} right now. Available: ${offered.length === 0 ? 'nothing' : offered.join(', ')}.`
   }
   await update($, outcomeState, () => null)
+  await update($, reviewBodyState, () => '')
   await update($, pendingState, () => pending)
   // Warm the account token now, so the write does not wait on a process spawn after the press.
   void tokenFor((argv, init) => $.process.run(argv, init), pending.login)
@@ -271,6 +279,20 @@ async function requestAutoMerge($: EngineInterface, subject: Subject, isFromComm
 
 async function cancelPending($: EngineInterface): Promise<void> {
   await update($, pendingState, () => null)
+  await update($, reviewBodyState, () => '')
+}
+
+/**
+ * The review field changed: keeps the text, and in the pending review too, so what
+ * the confirmation shows is what the confirm press posts. Enter in the field comes
+ * here as well and posts nothing; only confirmPending writes.
+ */
+async function setReviewBody($: EngineInterface, text: string): Promise<void> {
+  const body = text.slice(0, MAX_REVIEW_CHARS)
+  await update($, reviewBodyState, () => body)
+  await update($, pendingState, (current: PendingAction | null) =>
+    current !== null && (current.kind === 'approve' || current.kind === 'request-changes') ? { ...current, body } : current,
+  )
 }
 
 async function selectMethod($: EngineInterface, method: MergeMethod): Promise<void> {
@@ -292,12 +314,26 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
   if (confirmGuard.isBusy) return
   confirmGuard.isBusy = true
   try {
-    const pending = await read($, pendingState)
+    let pending = await read($, pendingState)
     if (pending === null) return
+    if (pending.kind === 'approve' || pending.kind === 'request-changes') {
+      // The text is taken from the field now, exactly as the confirmation shows it.
+      const body = await read($, reviewBodyState)
+      if (pending.body !== body) {
+        await update($, pendingState, (current: PendingAction | null) => (current !== null && current.kind === pending?.kind ? { ...current, body } : current))
+        pending = await read($, pendingState)
+        if (pending === null) return
+      }
+    }
     const step = confirmStep(pending, isSecondStep)
     if (step === 'ignore') return
     const pressedAt = await $.clock.now()
     if (isTooEarly(pending, pressedAt)) return
+    if (isReviewTextMissing(pending)) {
+      // Refused before any call: the confirmation stays up with the reason.
+      await update($, outcomeState, () => ({ kind: pending?.kind ?? 'request-changes', isOk: false, message: CHANGES_NEED_TEXT, at: new Date(pressedAt).toISOString() }))
+      return
+    }
     if (step === 'advance') {
       await update($, pendingState, (current: PendingAction | null) =>
         current !== null && current.kind === 'admin-merge' && !current.isSecondStep ? { ...current, isSecondStep: true, openedAt: pressedAt } : current,
@@ -343,11 +379,13 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
       if (outcome.isUnknown !== true) return
       // Timeout or unknown failure: the write may have gone through. Do not leave the confirmation armed.
       await update($, pendingState, () => null)
+      await update($, reviewBodyState, () => '')
       await $.ui.toast(`PR #${pending.prNumber}: result unknown, refreshed status`)
       if (live !== null) void live.run('command')
       return
     }
     await update($, pendingState, () => null)
+    await update($, reviewBodyState, () => '')
     // The action's own toast says it; the transition toast of the next refresh would say it twice.
     ownToast.prefix = transitionToastPrefix(pending.kind, pending.prNumber)
     ownToast.untilMs = pressedAt + OWN_TOAST_MS
@@ -369,6 +407,7 @@ async function selectPr($: EngineInterface, live: Live | null, number: number): 
   await update($, selectedState, () => ({ number }))
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
+  await update($, reviewBodyState, () => '')
   await update($, outcomeState, () => null)
   const opened = await showPane($, true)
   if (live !== null) void live.run('command')
@@ -381,6 +420,7 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
   await update($, selectedState, () => null)
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
+  await update($, reviewBodyState, () => '')
   await update($, outcomeState, () => null)
   if (live !== null) void live.run('command')
 }
@@ -478,6 +518,10 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
     requestDequeue: () => void requestAction($, 'dequeue', subject),
     requestAutoMerge: () => void requestAutoMerge($, subject),
     requestAdminMerge: () => void requestAction($, 'admin-merge', subject),
+    requestApprove: () => void requestAction($, 'approve', subject),
+    requestChanges: () => void requestAction($, 'request-changes', subject),
+    requestReady: () => void requestAction($, 'ready-for-review', subject),
+    setReviewBody: text => void setReviewBody($, text),
     confirmPending: isSecondStep => void confirmPending($, live, isSecondStep === true),
     cancelPending: () => void cancelPending($),
     selectMethod: method => void selectMethod($, method),
@@ -502,6 +546,7 @@ export const register: Register = (on, options) => {
     try {
       await update($, pendingState, () => null)
       await update($, outcomeState, () => null)
+      await update($, reviewBodyState, () => '')
     } catch {
       // a fresh session starts without a pending action either way
     }
@@ -518,7 +563,7 @@ export const register: Register = (on, options) => {
     const registeredNow: string[] = []
     for (const name of [...new Set(wanted)]) {
       try {
-        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
         registeredNow.push(name)
         ownNames.add(name)
       } catch {
@@ -840,6 +885,7 @@ export const register: Register = (on, options) => {
   // the picked pull request is no longer polled once nobody looks at it.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     await update($, pendingState, () => null)
+    await update($, reviewBodyState, () => '')
     await update($, selectedState, () => null)
     await update($, selectedSnapshotState, () => null)
     return next(e)

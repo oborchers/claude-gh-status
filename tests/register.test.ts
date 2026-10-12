@@ -3,7 +3,8 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { jobsRunning } from './fixtures/jobs'
-import { prAdmin, prAutoMerge, prFailing, prGreen, prMergeQueue, prNone, prRunning } from './fixtures/pr-raw'
+import { REVIEW_MUTATION } from '../src/actions'
+import { prAdmin, prAutoMerge, prDraft, prFailing, prGreen, prMerged, prMergeQueue, prNone, prRunning } from './fixtures/pr-raw'
 
 const NOW = Date.parse('2026-01-01T00:10:00Z')
 const PANE = 'gh-status'
@@ -222,7 +223,7 @@ describe('session start', () => {
     const world = setup(on)
     await start($, world)
     expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
     expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
@@ -1764,5 +1765,521 @@ describe('the list of open pull requests', () => {
     expect(writes(world)).toEqual([])
     expect(reruns(world)).toEqual([])
     await ui.unmount()
+  })
+})
+
+// Reviews: approve, request changes and ready for review of the pull request in the detail pane.
+
+describe('reviews', () => {
+  const NODE_ID = 'PR_kwDODKw3uc8AAAABGVY_uA'
+  const ownLogin = { author: { login: 'me' } }
+  const ownDraft = () => edited(prDraft, ownLogin)
+  const review = (kind: 'APPROVE' | 'REQUEST_CHANGES', body: string, headOid = HEAD, id = NODE_ID) => [
+    'api', 'graphql', '-f', `query=${REVIEW_MUTATION}`, '-f', `pullRequestId=${id}`, '-f', `commitOID=${headOid}`, '-f', `event=${kind}`, '-f', `body=${body}`,
+  ]
+  const typeInto = async (ui: Awaited<ReturnType<typeof showPane>>, world: World, text: string) => {
+    await ui.input({ key: 'review-body', text, kind: 'change' })
+    await world.clock.settle()
+  }
+  const bandSees = async (band: { find(target: { text: RegExp }): Promise<unknown> }, text: RegExp) => (await band.find({ text })) !== undefined
+  /** Everything the plugin asked `gh`, after the `before`th call. */
+  const callsSince = (world: World, before: number) => world.argvs.slice(before).filter(argv => argv[0] === 'gh' && !(argv[1] === 'auth' && argv[2] === 'token'))
+
+  describe('asking', () => {
+    for (const [argument, title] of [
+      ['approve', 'Approve cli/cli #14580'],
+      ['changes', 'Request changes on cli/cli #14580'],
+    ] as const) {
+      test(`/pr ${argument} sets the confirmation, opens the pane with the keyboard and writes nothing`, async ($, on) => {
+        const world = setup(on, prGreen)
+        await start($, world)
+        const ran = await runPr($, argument)
+        expect(ran.text).toContain(title)
+        expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, title: 'PR', focus: true }))
+        expect(writes(world)).toEqual([])
+        const pane = await showPane($)
+        expect(await sees(pane, new RegExp(title))).toBe(true)
+        expect(await pane.find({ key: 'review-body' })).toBeDefined()
+        await world.clock.advance(SETTLED_MS)
+        expect(writes(world)).toEqual([])
+        await pane.unmount()
+      })
+    }
+
+    test('/pr ready sets the confirmation for an own draft, without a field, and writes nothing', async ($, on) => {
+      const world = setup(on, ownDraft())
+      await start($, world)
+      const ran = await runPr($, 'ready')
+      expect(ran.text).toContain('Mark cli/cli #')
+      expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
+      const pane = await showPane($)
+      expect(await pane.find({ key: 'review-body' })).toBeUndefined()
+      expect(await isConfirming(pane)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      expect(writes(world)).toEqual([])
+      await pane.unmount()
+    })
+
+    test('the usage and the argument hint name the new subcommands', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      expect(world.registered[0]?.argumentHint).toContain('approve | changes | ready')
+      expect((await runPr($, 'nonsense')).text).toContain('approve | changes | ready')
+    })
+
+    test('the pane buttons only set the confirmation: nothing opens, nothing is written', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      const pane = await showPane($)
+      expect((await pane.find({ key: 'approve' }))?.props).toMatchObject({ hotkey: 'v' })
+      expect((await pane.find({ key: 'request-changes' }))?.props).toMatchObject({ hotkey: 'w' })
+      await pane.press({ key: 'request-changes' })
+      await world.clock.settle()
+      expect(world.opened).toEqual([])
+      expect(writes(world)).toEqual([])
+      expect(await sees(pane, /Request changes on cli\/cli #14580/)).toBe(true)
+      expect((await pane.find({ key: 'review-body' }))?.props).toMatchObject({ placeholder: 'what should change (required)' })
+      await pane.unmount()
+    })
+
+    test('an own PR offers no approve or request changes, in the command or the pane', async ($, on) => {
+      const world = setup(on, edited(prGreen, ownLogin))
+      await start($, world)
+      for (const argument of ['approve', 'changes']) {
+        const ran = await runPr($, argument)
+        expect(ran.text).toContain('not available')
+      }
+      expect(world.opened).toEqual([])
+      const pane = await showPane($)
+      expect(await pane.find({ key: 'approve' })).toBeUndefined()
+      expect(await pane.find({ key: 'request-changes' })).toBeUndefined()
+      expect(writes(world)).toEqual([])
+      await pane.unmount()
+    })
+
+    test('a draft by someone else offers no review and no ready', async ($, on) => {
+      const world = setup(on, prDraft)
+      await start($, world)
+      for (const argument of ['approve', 'changes', 'ready']) expect((await runPr($, argument)).text).toContain('not available')
+      expect(world.opened).toEqual([])
+      const pane = await showPane($)
+      for (const key of ['approve', 'request-changes', 'ready-for-review']) expect(await pane.find({ key })).toBeUndefined()
+      await pane.unmount()
+    })
+
+    test('an own draft offers ready for review', async ($, on) => {
+      const world = setup(on, ownDraft())
+      await start($, world)
+      const pane = await showPane($)
+      expect((await pane.find({ key: 'ready-for-review' }))?.props).toMatchObject({ hotkey: 'e' })
+      expect(await pane.find({ key: 'approve' })).toBeUndefined()
+      await pane.unmount()
+    })
+
+    test('a merged PR offers nothing to review', async ($, on) => {
+      const world = setup(on, prMerged)
+      await start($, world)
+      for (const argument of ['approve', 'changes', 'ready']) expect((await runPr($, argument)).text).toContain('not available')
+    })
+  })
+
+  describe('confirming', () => {
+    test('approve writes one review as the account: the seen head as commitOID, the typed text as body', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'approve')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'looks good to me')
+      expect(await sees(pane, 'looks good to me')).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      expect(writes(world)).toEqual([])
+      const fetchesBefore = world.fullFetches()
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('APPROVE', 'looks good to me')]])
+      expect(await isConfirming(pane)).toBe(false)
+      expect(world.toasts).toContain('PR #14580 approved')
+      expect(world.fullFetches()).toBeGreaterThan(fetchesBefore)
+      await pane.unmount()
+    })
+
+    test('approve without text posts an empty body', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'approve')
+      const pane = await showPane($)
+      expect(await sees(pane, '(no comment)')).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('APPROVE', '')]])
+      await pane.unmount()
+    })
+
+    test('request changes posts REQUEST_CHANGES with the typed text', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'rename x and add a test')
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'rename x and add a test')]])
+      expect(world.toasts).toContain('changes requested on PR #14580')
+      await pane.unmount()
+    })
+
+    test('Enter in the field never posts, before or after the guard; only the y press does', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await pane.input({ key: 'review-body', text: 'fix it' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      await world.clock.advance(SETTLED_MS)
+      await pane.input({ key: 'review-body', text: 'fix it now' })
+      await world.clock.settle()
+      await world.clock.advance(120_000)
+      expect(writes(world)).toEqual([])
+      expect(await isConfirming(pane)).toBe(true)
+      expect(await sees(pane, 'fix it now')).toBe(true)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'fix it now')]])
+      await pane.unmount()
+    })
+
+    test('the text posted is exactly the text shown, spaces, quotes and all', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      const text = '  keep   the spaces, "quotes" and \'ticks\', @someone, a=b  '
+      await typeInto(pane, world, text)
+      expect(await sees(pane, text)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', text)]])
+      await pane.unmount()
+    })
+
+    test('an empty request for changes is refused before any call; the confirmation stays and says why', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      const before = world.argvs.length
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(callsSince(world, before)).toEqual([])
+      expect(writes(world)).toEqual([])
+      expect(await isConfirming(pane)).toBe(true)
+      expect(await sees(pane, /✗ write what should change first/)).toBe(true)
+      await typeInto(pane, world, '   ')
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(callsSince(world, before)).toEqual([])
+      await typeInto(pane, world, 'now with a reason')
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'now with a reason')]])
+      await pane.unmount()
+    })
+
+    test('the confirm press inside the 600 ms guard writes nothing', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'approve')
+      const pane = await showPane($)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      expect(await isConfirming(pane)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toHaveLength(1)
+      await pane.unmount()
+    })
+
+    for (const argument of ['approve', 'changes']) {
+      test(`${argument}: a moved head at the fresh re-check writes nothing, keeps the dialog and says so`, async ($, on) => {
+        const world = setup(on, prGreen)
+        await start($, world)
+        await runPr($, argument)
+        const pane = await showPane($)
+        await typeInto(pane, world, 'text')
+        world.fixture = edited(prGreen, { headRefOid: 'ffff00000000000000000000000000000000ffff' })
+        await world.clock.advance(SETTLED_MS)
+        await pane.press({ key: 'confirm' })
+        await world.clock.settle()
+        expect(writes(world)).toEqual([])
+        expect(await isConfirming(pane)).toBe(true)
+        expect(await sees(pane, /new commits since you asked to confirm, review again/)).toBe(true)
+        await pane.unmount()
+      })
+    }
+
+    for (const [name, patch] of [['became a draft', { isDraft: true }], ['became the viewer own', { author: { login: 'me' } }], ['was merged', { state: 'MERGED' }]] as const) {
+      test(`a PR that ${name} at the re-check writes nothing`, async ($, on) => {
+        const world = setup(on, prGreen)
+        await start($, world)
+        await runPr($, 'approve')
+        const pane = await showPane($)
+        world.fixture = edited(prGreen, patch)
+        await world.clock.advance(SETTLED_MS)
+        await pane.press({ key: 'confirm' })
+        await world.clock.settle()
+        expect(writes(world)).toEqual([])
+        await pane.unmount()
+      })
+    }
+
+    for (const [name, answer] of [['a 502', done(1, '', 'gh: HTTP 502 Bad Gateway')], ['a 504', done(1, '', 'gh: HTTP 504')], ['a network error', done(1, '', 'error connecting to api.github.com: could not resolve host')]] as const) {
+      test(`${name} is an unknown result: the dialog closes, toast, refresh, no retry`, async ($, on) => {
+        const world = setup(on, prGreen)
+        world.mutationAnswer = answer
+        await start($, world)
+        await runPr($, 'approve')
+        const pane = await showPane($)
+        await typeInto(pane, world, 'maybe')
+        await world.clock.advance(SETTLED_MS)
+        const fetchesBefore = world.fullFetches()
+        await pane.press({ key: 'confirm' })
+        await world.clock.settle()
+        await world.clock.advance(120_000)
+        expect(writes(world)).toHaveLength(1)
+        expect(await isConfirming(pane)).toBe(false)
+        expect(world.toasts).toContain('PR #14580: result unknown, refreshed status')
+        expect(world.fullFetches()).toBeGreaterThan(fetchesBefore)
+        await pane.unmount()
+      })
+    }
+
+    test('a clear refusal keeps the confirmation with the message and runs once', async ($, on) => {
+      const world = setup(on, prGreen)
+      world.mutationAnswer = done(1, '', 'GraphQL: Review cannot be submitted right now')
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'text')
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      await world.clock.advance(120_000)
+      expect(writes(world)).toHaveLength(1)
+      expect(await isConfirming(pane)).toBe(true)
+      expect(await sees(pane, /✗ GraphQL: Review cannot be submitted right now/)).toBe(true)
+      await pane.unmount()
+    })
+
+    test('ready for review writes only the pull request id, after the guard', async ($, on) => {
+      const world = setup(on, ownDraft())
+      await start($, world)
+      await runPr($, 'ready')
+      const pane = await showPane($)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      const sent = writes(world)
+      expect(sent).toHaveLength(1)
+      expect(sent[0]?.find(arg => arg.startsWith('query='))).toContain('markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId})')
+      expect(sent[0]?.filter(arg => arg.includes('=') && !arg.startsWith('query='))).toEqual([expect.stringMatching(/^pullRequestId=/)])
+      expect(world.toasts).toContain('PR #14355 is ready for review')
+      await pane.unmount()
+    })
+
+    test('cancel drops the text with the dialog; the next dialog starts empty', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'half a thought')
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'cancel' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      expect(await isConfirming(pane)).toBe(false)
+      await runPr($, 'approve')
+      expect(await sees(pane, 'half a thought')).toBe(false)
+      expect(await sees(pane, '(no comment)')).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('APPROVE', '')]])
+      await pane.unmount()
+    })
+
+    test('closing the pane drops the dialog; a late confirm press cannot post', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      await runPr($, 'close')
+      await world.clock.settle()
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      expect(await isConfirming(pane)).toBe(false)
+      expect(writes(world)).toEqual([])
+      await pane.unmount()
+    })
+
+    test('typing after the dialog was cancelled does not bring it back', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'cancel' })
+      await world.clock.settle()
+      expect(await pane.find({ key: 'review-body' })).toBeUndefined()
+      expect(writes(world)).toEqual([])
+      await pane.unmount()
+    })
+  })
+
+  describe('the band', () => {
+    const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+
+    test('shows the short review confirmation for the branch pull request, and its y press posts the typed text', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'from the pane field')
+      const band = await mountBand($)
+      expect(await bandSees(band, /request changes #14580\?/)).toBe(true)
+      expect((await band.find({ key: 'band-confirm' }))?.props).toMatchObject({ hotkey: 'y', label: 'confirm' })
+      expect(await band.find({ key: 'review-body' })).toBeUndefined()
+      await world.clock.advance(SETTLED_MS)
+      await band.press({ key: 'band-confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'from the pane field')]])
+      await band.unmount()
+      await pane.unmount()
+    })
+
+    test('an empty request for changes cannot be confirmed from the band either', async ($, on) => {
+      const world = setup(on, prGreen)
+      await start($, world)
+      await runPr($, 'changes')
+      const band = await mountBand($)
+      await world.clock.advance(SETTLED_MS)
+      await band.press({ key: 'band-confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      await band.unmount()
+    })
+  })
+
+  describe('a pull request picked from the list', () => {
+    /** The branch has 14640 (blocked); the repository also has 14580 (green) to pick. */
+    const worldWithPick = (on: On): World => {
+      const world = setup(on, prFailing)
+      world.others[14580] = prGreen
+      return world
+    }
+    const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+
+    test('a review of the selected PR binds its id, head and number, and re-checks it by number', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      const ran = await runPr($, 'changes')
+      expect(ran.text).toContain('Request changes on cli/cli #14580')
+      const pane = await showPane($)
+      await typeInto(pane, world, 'selected one')
+      expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      const before = world.argvs.length
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'selected one')]])
+      const writeAt = world.argvs.findIndex((argv, index) => index >= before && argv.some(arg => arg.startsWith('query=mutation')))
+      const queries = world.argvs
+        .slice(before, writeAt)
+        .filter(argv => argv[1] === 'api')
+        .map(argv => argv.find(arg => arg.startsWith('query=')) ?? '')
+      expect(queries.some(query => query.includes('$number: Int!'))).toBe(true)
+      expect(queries.some(query => query.includes('$branch'))).toBe(false)
+      await pane.unmount()
+    })
+
+    test('the selected PR moving to a new head after the dialog opened: nothing is written', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'approve')
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      world.others[14580] = edited(prGreen, { headRefOid: 'ffff00000000000000000000000000000000ffff' })
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      expect(await sees(pane, /new commits since you asked to confirm/)).toBe(true)
+      await pane.unmount()
+    })
+
+    test('the band shows a review confirmation only for its own pull request', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'approve')
+      // pending is for 14580; the band is on 14640
+      const band = await mountBand($)
+      expect(await band.find({ key: 'band-confirm' })).toBeUndefined()
+      expect(await bandSees(band, /approve #14580\?/)).toBe(false)
+      const pane = await showPane($)
+      expect(await isConfirming(pane)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await band.press({ key: 'band-confirm' }).catch(() => undefined)
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      await band.unmount()
+      await pane.unmount()
+    })
+
+    test('with no pick the band confirms the branch review, and a pick later hides it', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, 'approve')
+      const band = await mountBand($)
+      expect(await bandSees(band, /approve #14640\?/)).toBe(true)
+      expect(await band.find({ key: 'band-confirm' })).toBeDefined()
+      await band.unmount()
+      await runPr($, '14580')
+      await world.clock.settle()
+      const after = await mountBand($)
+      expect(await after.find({ key: 'band-confirm' })).toBeUndefined()
+      await after.unmount()
+    })
+  })
+
+  describe('what the model can reach', () => {
+    test('no tool is registered, and nothing a tool call says can write a review', async ($, on) => {
+      const world = setup(on, prGreen)
+      const registered: unknown[] = []
+      on('tool.register', (_$, e) => {
+        registered.push(e)
+        return { value: undefined } as never
+      })
+      await start($, world)
+      await runPr($, 'approve')
+      await runPr($, 'changes')
+      await bash($, 'gh pr review 14580 --approve')
+      await world.clock.advance(SETTLED_MS)
+      await world.clock.settle()
+      expect(registered).toEqual([])
+      expect(writes(world)).toEqual([])
+    })
   })
 })

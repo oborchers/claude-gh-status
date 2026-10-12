@@ -209,14 +209,17 @@ function mergeSection(table: UiTable, view: View, handlers: Handlers, snapshot: 
   const add = (key: string, hotkey: string, label: string, onPress: () => void) => {
     buttons.push(<Button key={key} plain hotkey={hotkey} label={label} onPress={onPress} />)
   }
-  const actions = availableActions(pr)
-  const { requestMerge, requestEnqueue, requestDequeue, requestAutoMerge, requestAdminMerge, ciToClaude } = handlers
+  const actions = availableActions(pr, snapshot.account.login)
+  const { requestMerge, requestEnqueue, requestDequeue, requestAutoMerge, requestAdminMerge, requestApprove, requestChanges, requestReady, ciToClaude } = handlers
   if (requestMerge !== undefined && actions.includes('merge')) add('merge', 'm', 'merge', () => requestMerge())
   if (requestEnqueue !== undefined && actions.includes('enqueue')) add('enqueue', 'q', 'add to queue', () => requestEnqueue())
   if (requestDequeue !== undefined && actions.includes('dequeue')) add('dequeue', 'q', 'remove from queue', () => requestDequeue())
   if (requestAutoMerge !== undefined && actions.includes('auto-merge-on')) add('auto-merge', 'a', 'auto-merge', () => requestAutoMerge())
   if (requestAutoMerge !== undefined && actions.includes('auto-merge-off')) add('auto-merge', 'a', 'auto-merge off', () => requestAutoMerge())
   if (requestAdminMerge !== undefined && actions.includes('admin-merge')) add('admin-merge', 'x', 'admin merge', () => requestAdminMerge())
+  if (requestApprove !== undefined && actions.includes('approve')) add('approve', 'v', 'approve', () => requestApprove())
+  if (requestChanges !== undefined && actions.includes('request-changes')) add('request-changes', 'w', 'request changes', () => requestChanges())
+  if (requestReady !== undefined && actions.includes('ready-for-review')) add('ready-for-review', 'e', 'ready for review', () => requestReady())
   add('github', 'o', 'github', () => handlers.openOnGitHub())
   add('copy', 'c', 'copy url', () => handlers.copyUrl())
   add('refresh', 'r', 'refresh', () => handlers.refresh())
@@ -506,8 +509,8 @@ function checksRowCount(view: View, checks: Check[], pipeline: PipelineSummary):
 }
 
 /** Rows the buttons take once they wrap at the view's width; counts every action the PR offers. */
-function buttonRowCount(view: View, pr: PullRequest, status: Status): number {
-  const actions = availableActions(pr)
+function buttonRowCount(view: View, pr: PullRequest, status: Status, viewerLogin: string): number {
+  const actions = availableActions(pr, viewerLogin)
   const labels = ['o github', 'c copy url', 'r refresh']
   if (actions.includes('merge')) labels.push('m merge')
   if (actions.includes('enqueue')) labels.push('q add to queue')
@@ -515,6 +518,9 @@ function buttonRowCount(view: View, pr: PullRequest, status: Status): number {
   if (actions.includes('auto-merge-on')) labels.push('a auto-merge')
   if (actions.includes('auto-merge-off')) labels.push('a auto-merge off')
   if (actions.includes('admin-merge')) labels.push('x admin merge')
+  if (actions.includes('approve')) labels.push('v approve')
+  if (actions.includes('request-changes')) labels.push('w request changes')
+  if (actions.includes('ready-for-review')) labels.push('e ready for review')
   if (status.pipeline.failed > 0) labels.push('f fix ci')
   if (rerunnableRunIds(pr).length > 0) labels.push('t retry failed')
   let rows = 1
@@ -531,7 +537,7 @@ function buttonRowCount(view: View, pr: PullRequest, status: Status): number {
   return rows
 }
 
-function mergeRowCount(view: View, pr: PullRequest, status: Status): number {
+function mergeRowCount(view: View, pr: PullRequest, status: Status, viewerLogin: string): number {
   let rows = 1
   const hasQueueLine = pr.isInMergeQueue && pr.mergeQueueEntry !== null
   const isRepeat = repeatsBadge(pr, status)
@@ -542,7 +548,7 @@ function mergeRowCount(view: View, pr: PullRequest, status: Status): number {
   if (pr.autoMerge !== null) rows += 1
   if (pr.viewerCanMergeAsAdmin && pr.state === 'open') rows += 1
   if (outcomeToShow(view, pr) !== null) rows += 1
-  return rows + (view.pending !== null ? confirmRowCount(view, view.pending) : buttonRowCount(view, pr, status))
+  return rows + (view.pending !== null ? confirmRowCount(view, view.pending) : buttonRowCount(view, pr, status, viewerLogin))
 }
 
 function conversationRowCount(pr: PullRequest, status: Status): number {
@@ -569,7 +575,7 @@ export function paneRowCount(view: View): number {
   const { pr } = snapshot
   const sections = [
     HEADER_ROWS + (snapshot.stale ? 1 : 0) + (view.isSelected === true ? BACK_ROWS : 0),
-    mergeRowCount(view, pr, status),
+    mergeRowCount(view, pr, status, snapshot.account.login),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),
     checksRowCount(view, pr.checks, status.pipeline),

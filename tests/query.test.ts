@@ -83,6 +83,14 @@ describe('normalize', () => {
     expect(pr?.threads.some(thread => thread.isResolved)).toBe(true)
   })
 
+  test('the author comes from the detail query; a missing or deleted author is null', () => {
+    expect(PR_DETAIL_QUERY).toContain('author { login }')
+    expect(normalize(prGreen, cliLocation).pr?.author).toBe('fixture-author')
+    const deleted = structuredClone(prGreen) as { detail: { data: { node: Record<string, unknown> } } }
+    deleted.detail.data.node.author = null
+    expect(normalize(deleted, cliLocation).pr?.author).toBeNull()
+  })
+
   test('a draft pull request', () => {
     const pr = normalize(prDraft, cliLocation).pr
     expect(pr?.isDraft).toBe(true)

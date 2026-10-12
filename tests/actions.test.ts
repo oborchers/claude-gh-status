@@ -6,7 +6,13 @@ import {
   DEQUEUE_MUTATION,
   ENQUEUE_MUTATION,
   CANCELLED,
+  CHANGES_NEED_TEXT,
   HEAD_CHANGED,
+  READY_MUTATION,
+  REVIEW_MUTATION,
+  isReviewTextMissing,
+  readyArgs,
+  reviewArgs,
   RULES_CHANGED,
   autoMergeOffArgs,
   autoMergeOnArgs,
@@ -652,5 +658,265 @@ describe('rerunArgs and executeRerun', () => {
     expect(summary.ok).toEqual([])
     expect(summary.failed).toHaveLength(1)
     expect(gh.calls.filter(argv => argv[1] === 'run')).toEqual([])
+  })
+})
+
+// Reviews and ready-for-review: pull requests of other people and the viewer's own drafts.
+
+describe('review actions offered', () => {
+  const other = (overrides: Partial<PullRequest> = {}): PullRequest => makePr({ author: 'octocat', ...overrides })
+
+  test('an open, non-draft PR of someone else offers approve and request changes', () => {
+    const actions = availableActions(other(), 'me')
+    expect(actions).toContain('approve')
+    expect(actions).toContain('request-changes')
+    expect(actions).not.toContain('ready-for-review')
+  })
+
+  test('the viewer own PR offers neither, whatever the case of the logins', () => {
+    for (const author of ['me', 'ME', 'Me']) {
+      const actions = availableActions(makePr({ author }), 'me')
+      expect(actions).not.toContain('approve')
+      expect(actions).not.toContain('request-changes')
+    }
+  })
+
+  test('a draft of someone else offers no review and no ready', () => {
+    const actions = availableActions(other({ isDraft: true }), 'me')
+    expect(actions).not.toContain('approve')
+    expect(actions).not.toContain('request-changes')
+    expect(actions).not.toContain('ready-for-review')
+  })
+
+  test('ready for review only for an own, open draft', () => {
+    expect(availableActions(makePr({ author: 'me', isDraft: true }), 'me')).toContain('ready-for-review')
+    expect(availableActions(makePr({ author: 'ME', isDraft: true }), 'me')).toContain('ready-for-review')
+    expect(availableActions(makePr({ author: 'me', isDraft: false }), 'me')).not.toContain('ready-for-review')
+    expect(availableActions(makePr({ author: 'octocat', isDraft: true }), 'me')).not.toContain('ready-for-review')
+    expect(availableActions(makePr({ author: 'me', isDraft: true, state: 'merged' }), 'me')).toEqual([])
+    expect(availableActions(makePr({ author: 'me', isDraft: true, state: 'closed' }), 'me')).toEqual([])
+  })
+
+  test('nothing for merged or closed PRs, an invalid head, an unknown author or an unknown viewer', () => {
+    expect(availableActions(other({ state: 'merged' }), 'me')).toEqual([])
+    expect(availableActions(other({ state: 'closed' }), 'me')).toEqual([])
+    for (const headOid of ['', 'abc', OID.toUpperCase()]) expect(availableActions(other({ headOid }), 'me')).toEqual([])
+    expect(availableActions(other({ author: null }), 'me')).not.toContain('approve')
+    expect(availableActions(other({ author: null, isDraft: true }), 'me')).not.toContain('ready-for-review')
+    expect(availableActions(other(), '')).not.toContain('approve')
+  })
+
+  test('buildPending carries the seen head and the text; own PRs and drafts build nothing', () => {
+    const snapshot = makeSnapshot(makePr({ number: 8, headOid: OID, author: 'octocat' }), location)
+    expect(buildPending('approve', snapshot, undefined, 5, 'looks good')).toMatchObject({ kind: 'approve', headOid: OID, body: 'looks good', prNumber: 8, repo: 'acme/app', login: 'me', openedAt: 5 })
+    expect(buildPending('request-changes', snapshot, undefined, 5, 'fix x')).toMatchObject({ kind: 'request-changes', headOid: OID, body: 'fix x' })
+    expect(buildPending('approve', snapshot)).toMatchObject({ body: '' })
+    expect(buildPending('ready-for-review', snapshot)).toBeNull()
+    const own = makeSnapshot(makePr({ author: 'me' }), location)
+    expect(buildPending('approve', own)).toBeNull()
+    expect(buildPending('request-changes', own)).toBeNull()
+    const draft = makeSnapshot(makePr({ author: 'me', isDraft: true, headOid: OID }), location)
+    expect(buildPending('ready-for-review', draft)).toMatchObject({ kind: 'ready-for-review', headOid: OID })
+    expect(buildPending('approve', draft)).toBeNull()
+  })
+})
+
+describe('review argv', () => {
+  test('the mutations use the schema input names (checked against GitHub by introspection)', () => {
+    expect(REVIEW_MUTATION).toContain('addPullRequestReview(input: {pullRequestId: $pullRequestId, commitOID: $commitOID, event: $event, body: $body})')
+    expect(REVIEW_MUTATION).toContain('$commitOID: GitObjectID!')
+    expect(REVIEW_MUTATION).toContain('$event: PullRequestReviewEvent!')
+    expect(READY_MUTATION).toContain('markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId})')
+  })
+
+  test('approve and request changes: exact argv, the head as commitOID, every value as a string with -f', () => {
+    expect(reviewArgs('PR_1', 'approve', OID, 'ship it')).toEqual([
+      'api', 'graphql', '-f', `query=${REVIEW_MUTATION}`, '-f', 'pullRequestId=PR_1', '-f', `commitOID=${OID}`, '-f', 'event=APPROVE', '-f', 'body=ship it',
+    ])
+    expect(reviewArgs('PR_1', 'request-changes', OID, 'rename x')).toEqual([
+      'api', 'graphql', '-f', `query=${REVIEW_MUTATION}`, '-f', 'pullRequestId=PR_1', '-f', `commitOID=${OID}`, '-f', 'event=REQUEST_CHANGES', '-f', 'body=rename x',
+    ])
+    expect(reviewArgs('PR_1', 'approve', OID, 'a')).not.toContain('-F')
+  })
+
+  test('the text goes through unchanged: quotes, @, =, newlines and a leading @file; a blank approval sends an empty body', () => {
+    for (const body of ['say "hi" and \'there\'', '@file.txt', 'a=b', 'two\nlines', '  padded  ', '$(whoami)']) {
+      expect(reviewArgs('PR_1', 'request-changes', OID, body)).toContain(`body=${body}`)
+    }
+    expect(reviewArgs('PR_1', 'approve', OID, '')).toContain('body=')
+    expect(reviewArgs('PR_1', 'approve', OID, '   \n')).toContain('body=')
+  })
+
+  test('an invalid head never reaches an argv', () => {
+    for (const bad of ['', 'abc', OID.toUpperCase(), `${OID} `]) {
+      expect(() => reviewArgs('PR_1', 'approve', bad, 'x')).toThrow()
+      expect(() => reviewArgs('PR_1', 'request-changes', bad, 'x')).toThrow()
+    }
+  })
+
+  test('ready for review: only the pull request id', () => {
+    expect(readyArgs('PR_1')).toEqual(['api', 'graphql', '-f', `query=${READY_MUTATION}`, '-f', 'pullRequestId=PR_1'])
+  })
+
+  test('an empty or blank request for changes is missing its text; an approval never is', () => {
+    const snapshot = makeSnapshot(makePr(), location)
+    for (const body of ['', '   ', '\n\t']) {
+      expect(isReviewTextMissing(buildPending('request-changes', snapshot, undefined, 0, body) as PendingAction)).toBe(true)
+      expect(isReviewTextMissing(buildPending('approve', snapshot, undefined, 0, body) as PendingAction)).toBe(false)
+    }
+    expect(isReviewTextMissing(buildPending('request-changes', snapshot, undefined, 0, 'x') as PendingAction)).toBe(false)
+  })
+})
+
+describe('execute reviews', () => {
+  const reviewable = (overrides: Partial<PullRequest> = {}) => makePr({ number: 5, headOid: OID, author: 'octocat', ...overrides })
+  const ownDraft = () => makePr({ number: 5, headOid: OID, author: 'me', isDraft: true })
+  const pendingWith = (kind: 'approve' | 'request-changes' | 'ready-for-review', pr: PullRequest, body = '') => {
+    const snapshot = makeSnapshot(pr, location)
+    const pending = buildPending(kind, snapshot, undefined, 0, body)
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { pending, snapshot }
+  }
+
+  test('approve: one call, the head as commitOID, the exact text as body, then success', async () => {
+    forgetTokens()
+    const gh = fakeGh()
+    const { pending, snapshot } = pendingWith('approve', reviewable(), 'looks good to me')
+    expect(await execute(gh.exec, pending, snapshot, AT)).toEqual({ kind: 'approve', isOk: true, message: 'PR #5 approved', at: AT })
+    expect(gh.writes()).toEqual([['gh', ...reviewArgs('PR_node', 'approve', OID, 'looks good to me')]])
+    const write = gh.writes()[0] ?? []
+    expect(write).toContain(`commitOID=${OID}`)
+    expect(write).toContain('event=APPROVE')
+    expect(write).toContain('body=looks good to me')
+    expect(gh.envs[gh.calls.length - 1]).toMatchObject({ GH_TOKEN: 'tok' })
+  })
+
+  test('approve without text posts an empty body; request changes posts its text', async () => {
+    forgetTokens()
+    const gh = fakeGh()
+    const approve = pendingWith('approve', reviewable())
+    await execute(gh.exec, approve.pending, approve.snapshot, AT)
+    expect(gh.writes()[0]).toContain('body=')
+    const changes = pendingWith('request-changes', reviewable(), 'please rename x\nand add a test')
+    expect(await execute(gh.exec, changes.pending, changes.snapshot, AT)).toEqual({ kind: 'request-changes', isOk: true, message: 'changes requested on PR #5', at: AT })
+    expect(gh.writes()[1]).toContain('event=REQUEST_CHANGES')
+    expect(gh.writes()[1]).toContain('body=please rename x\nand add a test')
+  })
+
+  test('the body posted is the body of the pending action, whatever the fresh data holds', async () => {
+    forgetTokens()
+    const gh = fakeGh()
+    const { pending } = pendingWith('request-changes', reviewable(), 'exactly this')
+    const fresh = makeSnapshot(reviewable({ title: 'a new title' }), location)
+    await execute(gh.exec, pending, fresh, AT)
+    expect(gh.writes()[0]?.filter(arg => arg.startsWith('body='))).toEqual(['body=exactly this'])
+  })
+
+  test('request changes with an empty or blank text is refused before any call', async () => {
+    for (const body of ['', '   ', '\n']) {
+      forgetTokens()
+      const gh = fakeGh()
+      const { pending, snapshot } = pendingWith('request-changes', reviewable(), body)
+      const outcome = await execute(gh.exec, pending, snapshot, AT)
+      expect(outcome).toEqual({ kind: 'request-changes', isOk: false, message: CHANGES_NEED_TEXT, at: AT })
+      expect(gh.calls).toEqual([])
+    }
+    expect(CHANGES_NEED_TEXT).toBe('write what should change first')
+  })
+
+  test('a head that moved writes nothing, for approve and request changes', async () => {
+    for (const kind of ['approve', 'request-changes'] as const) {
+      forgetTokens()
+      const gh = fakeGh()
+      const { pending } = pendingWith(kind, reviewable({ headOid: OID }), 'x')
+      const moved = makeSnapshot(reviewable({ headOid: MOVED }), location)
+      expect(await execute(gh.exec, pending, moved, AT)).toEqual({ kind, isOk: false, message: HEAD_CHANGED, at: AT })
+      expect(gh.calls).toEqual([])
+    }
+  })
+
+  test('ready for review binds the head too, and writes only the pull request id', async () => {
+    forgetTokens()
+    const gh = fakeGh()
+    const { pending, snapshot } = pendingWith('ready-for-review', ownDraft())
+    expect(await execute(gh.exec, pending, makeSnapshot({ ...ownDraft(), headOid: MOVED }, location), AT)).toMatchObject({ isOk: false, message: HEAD_CHANGED })
+    expect(gh.calls).toEqual([])
+    expect(await execute(gh.exec, pending, snapshot, AT)).toEqual({ kind: 'ready-for-review', isOk: true, message: 'PR #5 is ready for review', at: AT })
+    expect(gh.writes()).toEqual([['gh', ...readyArgs('PR_node')]])
+  })
+
+  test('the fresh data decides: no longer available, another PR, repository or account: no write', async () => {
+    const cases: [string, Snapshot][] = [
+      ['became a draft', makeSnapshot(reviewable({ isDraft: true }), location)],
+      ['was merged', makeSnapshot(reviewable({ state: 'merged' }), location)],
+      ['is now own', makeSnapshot(reviewable({ author: 'me' }), location)],
+      ['another id', makeSnapshot(reviewable({ id: 'PR_other' }), location)],
+      ['another number', makeSnapshot(reviewable({ number: 6 }), location)],
+      ['another repository', makeSnapshot(reviewable(), makeLocation({ repo: 'other' }))],
+      ['another account', { ...makeSnapshot(reviewable(), location), account: { login: 'someone', source: 'active' } } as Snapshot],
+    ]
+    for (const [name, fresh] of cases) {
+      for (const kind of ['approve', 'request-changes'] as const) {
+        forgetTokens()
+        const gh = fakeGh()
+        const { pending } = pendingWith(kind, reviewable(), 'x')
+        const outcome = await execute(gh.exec, pending, fresh, AT)
+        expect(outcome.isOk, `${kind} ${name}`).toBe(false)
+        expect(gh.calls, `${kind} ${name}`).toEqual([])
+      }
+    }
+    forgetTokens()
+    const gh = fakeGh()
+    const { pending } = pendingWith('ready-for-review', ownDraft())
+    expect((await execute(gh.exec, pending, makeSnapshot({ ...ownDraft(), isDraft: false }, location), AT)).isOk).toBe(false)
+    expect(gh.calls).toEqual([])
+  })
+
+  test('a timeout, network error or 5xx is an unknown result; a clear refusal and a GraphQL error are not', async () => {
+    const run = async (kind: 'approve' | 'request-changes' | 'ready-for-review', answer: Exec) => {
+      forgetTokens()
+      const pr = kind === 'ready-for-review' ? ownDraft() : reviewable()
+      const { pending, snapshot } = pendingWith(kind, pr, 'x')
+      return execute(answer, pending, snapshot, AT)
+    }
+    const token = { exitCode: 0, stdout: 'tok', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    const failing = (stderr: string): Exec => async argv => (argv[1] === 'auth' ? token : { exitCode: 1, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false })
+    const throwing = (message: string): Exec => async argv => {
+      if (argv[1] === 'auth') return token
+      throw new Error(message)
+    }
+    for (const kind of ['approve', 'request-changes', 'ready-for-review'] as const) {
+      expect(await run(kind, throwing('process timed out'))).toMatchObject({ isOk: false, isUnknown: true })
+      expect(await run(kind, failing('gh: HTTP 502'))).toMatchObject({ isOk: false, isUnknown: true })
+      expect(await run(kind, failing('gh: HTTP 504'))).toMatchObject({ isOk: false, isUnknown: true })
+      expect(await run(kind, failing('error connecting: could not resolve host'))).toMatchObject({ isOk: false, isUnknown: true })
+      expect((await run(kind, failing('GraphQL: Review cannot be submitted by the author'))).isUnknown).toBeUndefined()
+    }
+    const graphqlError: Exec = async argv =>
+      argv[1] === 'auth' ? token : { exitCode: 0, stdout: '{"errors":[{"message":"Can not approve your own pull request"}]}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    expect(await run('approve', graphqlError)).toMatchObject({ isOk: false, message: 'Can not approve your own pull request' })
+  })
+
+  test('the write is skipped when the dialog is no longer pending right before it', async () => {
+    forgetTokens()
+    const gh = fakeGh()
+    const { pending, snapshot } = pendingWith('approve', reviewable(), 'x')
+    const outcome = await execute(gh.exec, pending, snapshot, AT, async () => false)
+    expect(outcome).toMatchObject({ isOk: false, message: CANCELLED })
+    expect(gh.writes()).toEqual([])
+  })
+
+  test('the 600 ms guard covers the review dialogs', () => {
+    const { pending } = pendingWith('request-changes', reviewable(), 'x')
+    const opened = { ...pending, openedAt: 10_000 }
+    expect(isTooEarly(opened, 10_599)).toBe(true)
+    expect(isTooEarly(opened, 10_600)).toBe(false)
+    expect(confirmStep(pending, false)).toBe('execute')
+  })
+
+  test('review kinds make no transition toast of their own', () => {
+    expect(transitionToastPrefix('approve', 5)).toBeNull()
+    expect(transitionToastPrefix('request-changes', 5)).toBeNull()
+    expect(transitionToastPrefix('ready-for-review', 5)).toBeNull()
   })
 })

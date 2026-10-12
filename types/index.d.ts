@@ -140,6 +140,8 @@ export type PullRequest = {
   /** The repository is private: a browser signed in as another account sees a 404. */
   isPrivate: boolean;
   isDraft: boolean;
+  /** Login of the author; null for a deleted account. */
+  author: string | null;
   /** Login of whoever merged it; set once merged. */
   mergedBy?: string | null;
   mergedAt?: string | null;
@@ -287,7 +289,10 @@ export type PendingAction =
   | (PendingBase & { kind: 'enqueue'; headOid: string })
   | (PendingBase & { kind: 'dequeue' })
   | (PendingBase & { kind: 'auto-merge-on'; headOid: string; method: MergeMethod })
-  | (PendingBase & { kind: 'auto-merge-off' });
+  | (PendingBase & { kind: 'auto-merge-off' })
+  | (PendingBase & { kind: 'approve'; headOid: string; body: string })
+  | (PendingBase & { kind: 'request-changes'; headOid: string; body: string })
+  | (PendingBase & { kind: 'ready-for-review'; headOid: string });
 
 /** Which list group a pull request falls in, in display order. */
 export type ListGroup = 'yours' | 'requested' | 'waiting' | 'other';

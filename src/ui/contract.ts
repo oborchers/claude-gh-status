@@ -81,6 +81,12 @@ export type Handlers = {
   requestDequeue?(): void
   requestAutoMerge?(): void
   requestAdminMerge?(): void
+  /** Review actions for the shown pull request: approve, request changes, take a draft out of draft. Each only sets the confirmation. */
+  requestApprove?(): void
+  requestChanges?(): void
+  requestReady?(): void
+  /** The review field's text, kept in the pending review; it is posted only by the confirm press, never by Enter. */
+  setReviewBody?(text: string): void
   /**
    * The confirm press. `isSecondStep` is the admin step the pressed button was
    * drawn for; a press from another step than the live one is ignored, so a

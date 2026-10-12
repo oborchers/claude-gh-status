@@ -6,7 +6,7 @@ import { buildPending, withMethod } from '../src/actions'
 import type { PendingAction, PullRequest, Snapshot } from '../src/model'
 import { deriveStatus } from '../src/status'
 import { PALETTES } from '../src/ui/colors'
-import { confirmButton, confirmTitle, renderConfirm } from '../src/ui/confirm'
+import { confirmButton, confirmRowCount, confirmTitle, renderConfirm } from '../src/ui/confirm'
 import type { Handlers, View } from '../src/ui/contract'
 import { makeCheck, makeLocation, makePr, makeSnapshot } from './fixtures/pr-builder'
 
@@ -56,7 +56,7 @@ function handlersFor(calls: Calls): Handlers {
   }
 }
 
-type Mounted = Pick<MountedOf<'terminal', 'Pane'>, 'drawn' | 'find' | 'findAll' | 'press' | 'select' | 'unmount'>
+type Mounted = Pick<MountedOf<'terminal', 'Pane'>, 'drawn' | 'find' | 'findAll' | 'press' | 'select' | 'input' | 'unmount'>
 
 /** Draws the dialog through the real element table, the way the pane hook does. */
 function createRig(on: On) {
@@ -66,10 +66,10 @@ function createRig(on: On) {
     return renderConfirm($.ui.resolve(e), current.view, current.pending, current.handlers)
   })
   return {
-    show($: Engine, view: View, pending: PendingAction, handlers: Handlers): Promise<Mounted> {
+    show($: Engine, view: View, pending: PendingAction, handlers: Handlers, surface: 'terminal' | 'desktop' = 'terminal'): Promise<Mounted> {
       current = { view, pending, handlers }
       const props = { title: 'Confirm', isFocused: true, bodyColumns: view.columns, placement: 'inline' }
-      return $.ui.mount({ plugin: 'test', surface: 'terminal', component: 'Pane', requestId: 'confirm', props: props as never })
+      return $.ui.mount({ plugin: 'test', surface, component: 'Pane', requestId: 'confirm', props: props as never }) as Promise<Mounted>
     },
   }
 }
@@ -85,6 +85,7 @@ function rowsOf(node: unknown): string[] {
     const text = String(props.label ?? '')
     return [props.hotkey !== undefined ? `[${String(props.hotkey)}: ${text}]` : `[${text}]`]
   }
+  if (element.type === 'Input') return [`[input ${String(props.key ?? '')}] ${String(props.value ?? '') || `<${String(props.placeholder ?? '')}>`}`]
   if (element.type === 'Select') {
     const options = (props.options as { value: string }[]).map(option => option.value).join('|')
     return [`${String(props.label ?? '')}<${options}> ${String(props.value)}`]
@@ -285,5 +286,141 @@ describe('the other dialogs', () => {
     expect(withMethod(merge, 'rebase', ['squash'])).toBe(merge)
     const dequeue: PendingAction = { ...base, kind: 'dequeue' }
     expect(withMethod(dequeue, 'merge', allowed)).toBe(dequeue)
+  })
+})
+
+describe('the review dialogs', () => {
+  const surfaces = ['terminal', 'desktop'] as const
+  const reviewable = (overrides: Partial<PullRequest> = {}): PullRequest => makePr({ number: 1, title: 'add the write actions', baseRefName: 'main', headOid: OID, author: 'octocat', ...overrides })
+
+  function reviewPending(kind: 'approve' | 'request-changes' | 'ready-for-review', body = '', pr: PullRequest = reviewable()): { pending: PendingAction; view: View } {
+    const snapshot = makeSnapshot(pr)
+    const pending = buildPending(kind, snapshot, undefined, 0, body)
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { pending, view: viewFor(snapshot) }
+  }
+
+  const handlersWithBody = (calls: Calls): Handlers => ({ ...handlersFor(calls), setReviewBody: text => void calls.push(`setReviewBody ${text}`) })
+
+  test('request changes: title, PR, head, account, field, the exact text, the buttons and the hint', async ($, on) => {
+    const rig = createRig(on)
+    const { pending, view } = reviewPending('request-changes', 'rename x and add a test')
+    const ui = await rig.show($, view, pending, handlersWithBody([]))
+    expect(await textOf(ui)).toBe(
+      [
+        'Request changes on acme/app #1',
+        'add the write actions',
+        'head 14c6306 · as @me',
+        '[input review-body] rename x and add a test',
+        'Will post:',
+        'rename x and add a test',
+        '[y: request changes #1]  [n: cancel]',
+        'Esc leaves the field, then y posts it, n cancels (Enter does not post)',
+      ].join('\n'),
+    )
+  })
+
+  test('approve: optional comment, "(no comment)" when empty', async ($, on) => {
+    const rig = createRig(on)
+    const { pending, view } = reviewPending('approve')
+    const ui = await rig.show($, view, pending, handlersWithBody([]))
+    expect(await textOf(ui)).toBe(
+      [
+        'Approve acme/app #1',
+        'add the write actions',
+        'head 14c6306 · as @me',
+        '[input review-body] <comment (optional)>',
+        'Will post:',
+        '(no comment)',
+        '[y: approve #1]  [n: cancel]',
+        'Esc leaves the field, then y posts it, n cancels (Enter does not post)',
+      ].join('\n'),
+    )
+    const blank = reviewPending('approve', '   ')
+    await ui.unmount()
+    const again = await rig.show($, blank.view, blank.pending, handlersWithBody([]))
+    expect(await textOf(again)).toContain('(no comment)')
+  })
+
+  test('an empty request for changes says what is missing, in the failure color', async ($, on) => {
+    const rig = createRig(on)
+    const { pending, view } = reviewPending('request-changes')
+    const ui = await rig.show($, view, pending, handlersWithBody([]))
+    const text = await textOf(ui)
+    expect(text).toContain('[input review-body] <what should change (required)>')
+    expect(text).toContain('write what should change first')
+    expect(colorOf(await ui.drawn(), 'write what should change first')).toBe(PALETTES.claude.failure)
+  })
+
+  for (const surface of surfaces) {
+    test(`${surface}: the field carries the placeholder and the text; typing reaches setReviewBody, Enter does not confirm`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: Calls = []
+      const { pending, view } = reviewPending('request-changes', 'first')
+      const ui = await rig.show($, view, pending, handlersWithBody(calls), surface)
+      const field = await ui.find({ key: 'review-body' })
+      expect(field?.props).toMatchObject({ placeholder: 'what should change (required)', value: 'first' })
+      await ui.input({ key: 'review-body', text: 'first and more', kind: 'change' })
+      await ui.input({ key: 'review-body', text: 'first and more' })
+      expect(calls).toEqual(['setReviewBody first and more', 'setReviewBody first and more'])
+      expect(calls.some(call => call.startsWith('confirmPending'))).toBe(false)
+      expect(calls.some(call => call.startsWith('cancelPending'))).toBe(false)
+    })
+
+    test(`${surface}: only the y button confirms, n cancels`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: Calls = []
+      const { pending, view } = reviewPending('approve', 'ok')
+      const ui = await rig.show($, view, pending, handlersWithBody(calls), surface)
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['y', 'n'])
+      expect((await ui.find({ key: 'confirm' }))?.props).toMatchObject({ hotkey: 'y', label: 'approve #1' })
+      await ui.press({ key: 'confirm' })
+      await ui.press({ key: 'cancel' })
+      expect(calls).toEqual(['confirmPending false', 'cancelPending'])
+    })
+
+    test(`${surface}: ready for review has no field`, async ($, on) => {
+      const rig = createRig(on)
+      const { pending, view } = reviewPending('ready-for-review', '', reviewable({ author: 'me', isDraft: true }))
+      const ui = await rig.show($, view, pending, handlersWithBody([]), surface)
+      expect(await ui.find({ key: 'review-body' })).toBeUndefined()
+      expect(await textOf(ui)).toBe(['Mark acme/app #1 ready for review', 'add the write actions', 'head 14c6306 · as @me', '[y: ready for review #1]  [n: cancel]', 'press y to confirm, n to cancel'].join('\n'))
+    })
+  }
+
+  test('a long text is shown whole, not cut to the width', async ($, on) => {
+    const rig = createRig(on)
+    const body = `${'please change this thing '.repeat(20)}end`
+    const { pending, view } = reviewPending('request-changes', body)
+    const ui = await rig.show($, view, pending, handlersWithBody([]))
+    expect(JSON.stringify(await ui.drawn())).toContain(body)
+  })
+
+  test('the moved head and the last refusal show in the dialog', async ($, on) => {
+    const rig = createRig(on)
+    const { pending } = reviewPending('request-changes', 'x')
+    const moved = viewFor(makeSnapshot(reviewable({ headOid: 'f'.repeat(40) })), { kind: 'request-changes', isOk: false, message: 'write what should change first', at: '2026-01-01T00:09:00Z' })
+    const ui = await rig.show($, moved, pending, handlersWithBody([]))
+    const text = await textOf(ui)
+    expect(text).toContain('new commits since you asked to confirm, review again')
+    expect(text).toContain('✗ write what should change first')
+  })
+
+  test('titles and buttons', () => {
+    const request = reviewPending('request-changes', 'x').pending
+    expect(confirmTitle(request)).toBe('Request changes on acme/app #1')
+    expect(confirmButton(request)).toEqual({ hotkey: 'y', label: 'request changes #1' })
+    expect(confirmTitle(reviewPending('approve').pending)).toBe('Approve acme/app #1')
+  })
+
+  test('the row count covers the rows drawn', async ($, on) => {
+    const rig = createRig(on)
+    for (const [kind, body] of [['approve', ''], ['request-changes', 'x'], ['request-changes', 'a '.repeat(90)]] as const) {
+      const { pending, view } = reviewPending(kind, body)
+      const ui = await rig.show($, view, pending, handlersWithBody([]))
+      const drawn = (await textOf(ui)).split('\n').length
+      expect(confirmRowCount(view, pending)).toBeGreaterThanOrEqual(drawn)
+      await ui.unmount()
+    }
   })
 })
