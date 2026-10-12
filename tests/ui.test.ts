@@ -1172,3 +1172,71 @@ describe('paneRowCount', () => {
     expect(paneRowCount(view)).toBe(6)
   })
 })
+
+describe('the retry failed button', () => {
+  const rerunnable = [makeCheck({ name: 'lint', state: 'failure', runId: 70 }), makeCheck({ name: 'build', state: 'success', runId: 71 })]
+  const inProgress = [makeCheck({ name: 'lint', state: 'failure', runId: 70 }), makeCheck({ name: 'test', state: 'running', runId: 70 })]
+
+  test('the band shows t only when a run can be re-run and the handler exists, on both surfaces', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const handlers = handlersFor(calls, { rerunFailed: () => void calls.push('rerunFailed') })
+      const shown = await rig.band($, surface, prView({ checks: rerunnable }, 160), handlers)
+      expect(hotkeysOf(await shown.findAll({ type: 'Button' }))).toContain('t')
+      expect(await textOf(shown)).toContain('t: retry failed')
+      await shown.press({ key: 'band-retry-failed' })
+      expect(calls).toEqual(['rerunFailed'])
+      await shown.unmount()
+
+      const running = await rig.band($, surface, prView({ checks: inProgress }, 160), handlers)
+      expect(hotkeysOf(await running.findAll({ type: 'Button' }))).not.toContain('t')
+      await running.unmount()
+
+      const noHandler = await rig.band($, surface, prView({ checks: rerunnable }, 160), handlersFor([]))
+      expect(hotkeysOf(await noHandler.findAll({ type: 'Button' }))).not.toContain('t')
+      await noHandler.unmount()
+
+      const noRunId = await rig.band($, surface, prView({ checks: [makeCheck({ name: 'ext', state: 'failure' })] }, 160), handlers)
+      expect(hotkeysOf(await noRunId.findAll({ type: 'Button' }))).not.toContain('t')
+      await noRunId.unmount()
+    }
+  })
+
+  test('the band drops it first when the row is tight', async ($, on) => {
+    const rig = createRig(on)
+    const handlers = handlersFor([], { ciToClaude: () => {}, rerunFailed: () => {} })
+    const wide = await rig.band($, 'terminal', prView({ checks: rerunnable }, 160), handlers)
+    expect(hotkeysOf(await wide.findAll({ type: 'Button' }))).toEqual(['d', 'o', 'f', 't'])
+    await wide.unmount()
+    for (const columns of [40, 60, 80]) {
+      const ui = await rig.band($, 'terminal', prView({ checks: rerunnable }, columns), handlers)
+      const keys = hotkeysOf(await ui.findAll({ type: 'Button' }))
+      if (keys.includes('t')) expect(keys).toEqual(['d', 'o', 'f', 't'])
+      for (const row of rowsOf(await ui.drawn())) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      await ui.unmount()
+    }
+  })
+
+  test('the pane shows t next to fix ci only when a run can be re-run, and pressing it calls the handler', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const handlers = handlersFor(calls, { ciToClaude: () => {}, rerunFailed: () => void calls.push('rerunFailed') })
+      const shown = await rig.pane($, surface, prView({ checks: rerunnable }, 100), handlers)
+      const keys = hotkeysOf(await shown.findAll({ type: 'Button' }))
+      expect(keys.indexOf('t')).toBe(keys.indexOf('f') + 1)
+      await shown.press({ key: 'rerun-failed' })
+      expect(calls).toEqual(['rerunFailed'])
+      await shown.unmount()
+
+      const running = await rig.pane($, surface, prView({ checks: inProgress }, 100), handlers)
+      expect(hotkeysOf(await running.findAll({ type: 'Button' }))).not.toContain('t')
+      await running.unmount()
+
+      const noHandler = await rig.pane($, surface, prView({ checks: rerunnable }, 100), handlersFor([], { ciToClaude: () => {} }))
+      expect(hotkeysOf(await noHandler.findAll({ type: 'Button' }))).not.toContain('t')
+      await noHandler.unmount()
+    }
+  })
+})

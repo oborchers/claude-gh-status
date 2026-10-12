@@ -83,15 +83,18 @@ Requirements:
 | `/pr auto` (`/pr a`) | Ask to turn auto-merge on, or off if it is on |
 | `/pr admin` (`/pr x`) | Ask for an admin merge (two steps) |
 | `/pr fix` | Put the failed CI jobs into the prompt |
+| `/pr rerun` (`/pr rr`) | Re-run only the failed jobs of the failed workflow runs (no confirmation: it only starts CI again) |
 
 Write commands only ask: they open the detail pane with the keyboard and show the confirmation in its Merge section and in the band. The keyboard is granted when the prompt is empty. They tell you when an action is not available for the current PR.
+
+Re-running covers the head commit's failed, timed-out and cancelled Actions runs, once each, with `gh run rerun <id> --failed`. A run that still has a queued or running job is skipped (GitHub refuses it), runs waiting for approval are skipped, and the merge queue's own checks are never touched. It writes nothing but a new CI attempt: no merge, no code.
 
 Keys (a key only appears when its action is available):
 
 | Where | Keys |
 | --- | --- |
-| Band | `d` details, `o` open on GitHub, `f` fix CI (when a check failed), `m` merge, `q` add to queue |
-| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed) |
+| Band | `d` details, `o` open on GitHub, `f` fix CI (when a check failed), `m` merge, `q` add to queue, `t` retry failed jobs (when a failed run can be re-run) |
+| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed), `t` retry failed jobs (when a failed run can be re-run) |
 | Confirmation (band or pane) | `y` confirm (`b` for the final admin step), `n` cancel |
 
 Keys work while the band or pane has the keyboard: focus the band or pane with ctrl+x tab or a click. If your terminal multiplexer takes ctrl+x tab, click the band to focus it. Esc returns to the prompt. There is no separate dialog: a button press or a slash command sets the confirmation, and both the band (a one-line prompt with `y` and `n`) and the pane's Merge section (full details) show it, so whichever one holds the keyboard can answer. Cancel with `n` (or `/pr close`, or the pane's close mark); Esc alone only returns the keyboard. With several allowed merge methods the pane's confirmation shows a method selector (squash is the default if allowed).

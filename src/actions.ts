@@ -9,7 +9,7 @@
 
 import { runGh, tokenFor } from './gh'
 import type { Exec, GhResult } from './gh'
-import type { ActionOutcome, Blocker, JobDetail, MergeMethod, PendingAction, PullRequest, RepoLocation, Snapshot } from './model'
+import type { ActionOutcome, Blocker, CheckState, JobDetail, MergeMethod, PendingAction, PullRequest, RepoLocation, Snapshot } from './model'
 import { FAILED_STATES, deriveBlockers, deriveStatus } from './status'
 
 export type PrSnapshot = Extract<Snapshot, { kind: 'pr' }>
@@ -106,6 +106,14 @@ export const dequeueArgs = (prId: string): string[] => graphqlArgs(DEQUEUE_MUTAT
 export const autoMergeOnArgs = (prId: string, method: MergeMethod, headOid: string): string[] =>
   graphqlArgs(AUTO_MERGE_ON_MUTATION, [['pullRequestId', prId], ['mergeMethod', METHOD_ENUM[method]], ['expectedHeadOid', requireOid(headOid)]])
 
+/** `gh run rerun` arguments for one run: only its failed jobs. Throws without a valid repository or run id. */
+export function rerunArgs(runId: number, location: RepoLocation): string[] {
+  const slug = repoSlug(location)
+  if (slug === null || !SLUG_PATTERN.test(slug)) throw new Error('no GitHub repository to re-run in')
+  if (!Number.isSafeInteger(runId) || runId <= 0) throw new Error('no valid run to re-run')
+  return ['run', 'rerun', String(runId), '--failed', '-R', slug]
+}
+
 export const autoMergeOffArgs = (prId: string): string[] => graphqlArgs(AUTO_MERGE_OFF_MUTATION, [['pullRequestId', prId]])
 
 /** The write actions the person may start for this pull request, in display order. */
@@ -125,6 +133,50 @@ export function availableActions(pr: PullRequest): ActionKind[] {
   const needsBypass = !isMergeable || pr.isMergeQueueEnabled
   if (pr.viewerCanMergeAsAdmin && hasMethod && needsBypass && !pr.isDraft && !pr.isInMergeQueue) actions.push('admin-merge')
   return actions
+}
+
+/** States of a check whose job `gh run rerun --failed` re-runs. action-required is left out: it waits for an approval, a re-run does not help. */
+const RERUNNABLE_STATES: readonly CheckState[] = ['failure', 'timed-out', 'cancelled']
+
+/**
+ * Distinct Actions run ids worth re-running: a check of the run failed, timed out
+ * or was cancelled, and no check of that same run is still queued or running
+ * (GitHub refuses to re-run a run in progress). Checks without a run id (other
+ * providers) are ignored. Only the head commit's checks count, never the merge
+ * queue's own (pr.mergeQueueEntry.checks), which GitHub starts and owns.
+ */
+export function rerunnableRunIds(pr: PullRequest): number[] {
+  const inProgress = new Set<number>()
+  for (const check of pr.checks) {
+    if (check.runId !== null && (check.state === 'queued' || check.state === 'running')) inProgress.add(check.runId)
+  }
+  const ids: number[] = []
+  for (const check of pr.checks) {
+    if (check.runId === null || !RERUNNABLE_STATES.includes(check.state)) continue
+    if (inProgress.has(check.runId) || ids.includes(check.runId)) continue
+    ids.push(check.runId)
+  }
+  return ids
+}
+
+export type RerunSummary = { ok: number[]; failed: Array<{ runId: number; message: string }> }
+
+/** Re-runs the failed jobs of each run once, as `login`, never retrying. Never rejects; every run is tried. */
+export async function executeRerun(exec: Exec, login: string, location: RepoLocation, runIds: readonly number[]): Promise<RerunSummary> {
+  const summary: RerunSummary = { ok: [], failed: [] }
+  for (const runId of runIds) {
+    let args: string[]
+    try {
+      args = rerunArgs(runId, location)
+    } catch (error) {
+      summary.failed.push({ runId, message: error instanceof Error ? error.message : 'the re-run could not be built' })
+      continue
+    }
+    const ran = await runGh(exec, args, { login, cwd: location.cwd, timeoutMs: WRITE_TIMEOUT_MS })
+    if (ran.isOk) summary.ok.push(runId)
+    else summary.failed.push({ runId, message: ran.message })
+  }
+  return summary
 }
 
 /** The rules an admin merge would bypass, as the person reads them. */
