@@ -7,6 +7,12 @@
     "name": "Oliver Borchers"
   },
   "userConfig": {
+    "command": {
+      "type": "string",
+      "title": "Command name",
+      "description": "Slash command name; if it is taken in a session (for example by a skill), /gh-pr is used instead",
+      "default": "pr"
+    },
     "accounts": {
       "type": "string",
       "title": "Account per owner",

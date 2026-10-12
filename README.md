@@ -70,6 +70,8 @@ Requirements:
 
 ## Commands and keys
 
+The command is `/pr`. If a skill or another command already uses that name in a session, the mod does not register it there and a toast says so; `/gh-pr` always works and does the same. The name can be changed with the setting `command` (Command name). Below, `/pr` stands for the active name.
+
 | Command | Does |
 | --- | --- |
 | `/pr` | Open the detail pane |
@@ -123,6 +125,7 @@ Shown as rows in `/config`.
 | Fast interval (`fastIntervalSeconds`) | 5 | Check interval while checks run or the PR is in the merge queue. |
 | Idle interval (`idleIntervalSeconds`) | 30 | Check interval when nothing runs. |
 | Toasts on state changes (`toasts`) | on | Show a toast when the pipeline, reviews, comments or mergeability change. |
+| Command name (`command`) | `pr` | Slash command name (1 to 32 characters of a-z, 0-9 and `-`; anything else means `pr`). When it is taken in a session, for example by a skill, `/gh-pr` is used instead. |
 | Color scheme (`colors`) | `claude` | `claude` follows your Claude Code theme; `github` uses GitHub's Primer colors. |
 
 ## Live updates and rate limits
