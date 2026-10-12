@@ -47,6 +47,9 @@ function checkRank(check: Check): number {
       return 1
     case 'queued':
       return 2
+    case 'skipped':
+    case 'neutral':
+      return 4
     default:
       return 3
   }

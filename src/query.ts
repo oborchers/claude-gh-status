@@ -235,14 +235,41 @@ function toCheck(node: Obj): Check | null {
   return null
 }
 
-/** The checks of a statusCheckRollup, malformed contexts dropped. */
+/** The checks of a statusCheckRollup, malformed contexts dropped, latest run per check kept. */
 function checksOf(rollup: unknown): Check[] {
   const checks: Check[] = []
   for (const context of nodesOf(asObj(rollup)?.contexts)) {
     const check = toCheck(context)
     if (check !== null) checks.push(check)
   }
-  return checks
+  return latestPerCheck(checks)
+}
+
+/**
+ * A workflow that runs twice on one commit (two pull request events) reports
+ * every check twice. GitHub judges mergeability by the latest check run per
+ * workflow and name, so only that one is kept, at the position of the first.
+ * Check run ids grow, so the larger job id is the later run. Pure, exported for tests.
+ */
+export function latestPerCheck(checks: Check[]): Check[] {
+  const latest = new Map<string, Check>()
+  const order: string[] = []
+  for (const check of checks) {
+    if (check.jobId === null) {
+      order.push(`status:${order.length}`)
+      latest.set(order[order.length - 1] as string, check)
+      continue
+    }
+    const key = `${check.workflow ?? ''}\u0000${check.name}`
+    const known = latest.get(key)
+    if (known === undefined) {
+      order.push(key)
+      latest.set(key, check)
+    } else if ((known.jobId ?? 0) < check.jobId) {
+      latest.set(key, check)
+    }
+  }
+  return order.map((key) => latest.get(key) as Check)
 }
 
 /**
