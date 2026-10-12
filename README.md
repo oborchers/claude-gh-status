@@ -61,7 +61,7 @@ Keys, when the band has the keyboard (a key only appears when its action is avai
 
 ## All open pull requests
 
-<img src="docs/images/list-view.png" alt="The list pane: the repository's open pull requests in groups, two lines each with status symbol, title, labels, number, author, age, checks, review state and comments" width="100%">
+<img src="docs/images/list-view.png" alt="The list pane: the repository's open pull requests in groups, two lines each with status symbol, title, labels, number, author, age, checks, review state and comments" width="750">
 
 Open the list with `l` in the band (when the branch has no pull request) or in the pane, with `/gh-pr list` (`ls`), or with `/gh-pr` alone when the branch has no pull request.
 
@@ -73,7 +73,7 @@ Open the list with `l` in the band (when the branch has no pull request) or in t
 
 ## Open any pull request
 
-<img src="docs/images/selected-view.png" alt="The detail pane showing a pull request picked from the list, marked (selected), with a back key" width="100%">
+<img src="docs/images/selected-view.png" alt="The detail pane showing a pull request picked from the list, marked (selected), with a back key" width="750">
 
 Pick a row in the list, or type `/gh-pr <number>`. The pane shows that pull request and marks it `(selected)`, with `b: back` to return to the branch's pull request. The band keeps showing the branch's own pull request.
 
