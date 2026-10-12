@@ -1,7 +1,11 @@
 {
-  "name": "oborchers",
-  "owner": { "name": "Oliver Borchers" },
-  "metadata": { "description": "Claude Code mods by Oliver Borchers." },
+  "name": "claude-gh-status",
+  "owner": {
+    "name": "Oliver Borchers"
+  },
+  "metadata": {
+    "description": "gh-status, live pull request status for Claude Code."
+  },
   "plugins": [
     {
       "name": "gh-status",
