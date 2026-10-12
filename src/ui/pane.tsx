@@ -391,6 +391,21 @@ function staleRows(table: UiTable, view: View, snapshot: Pr): RenderElement[] {
   ]
 }
 
+const LIST_LABEL = 'all PRs'
+const LIST_GAP = 2
+
+/** The button that opens the list of open pull requests; drawn only when the list is available. */
+function listButton(table: UiTable, handlers: Handlers, marginLeft?: number): RenderElement | null {
+  const { Box, Button } = table
+  const { openList } = handlers
+  if (openList === undefined) return null
+  return (
+    <Box flexShrink={0} marginLeft={marginLeft}>
+      <Button key="pane-list" plain hotkey="l" label={LIST_LABEL} onPress={() => openList()} />
+    </Box>
+  )
+}
+
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
   const { Box, Text } = table
   const { pr, account } = snapshot
@@ -398,7 +413,9 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
   const badge = prBadge(pr)
   // One line: the colored state badge, then the title, cut to what is left.
   const label = view.isSelected === true ? `PR #${pr.number} (selected)` : `PR #${pr.number}`
-  const title = truncate(`${label} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3))
+  const { openList } = handlers
+  const listWidth = openList === undefined ? 0 : cellWidth(LIST_LABEL) + 3 + LIST_GAP
+  const title = truncate(`${label} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3 - listWidth))
   return [
     <Box flexDirection="row" flexWrap="nowrap">
       <Box flexShrink={0}>
@@ -408,6 +425,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
         <Text> </Text>
       </Box>
       <Box flexShrink={0}>{prAnchor(table, view, handlers, pr.url, title)}</Box>
+      {listButton(table, handlers, LIST_GAP)}
     </Box>,
     <Text wrap="truncate-end">
       {truncate(`${pr.headRefName} → ${pr.baseRefName}`, columns)}
@@ -445,6 +463,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
           {text}
         </Text>
         <Button key="refresh" plain hotkey="r" label="refresh" onPress={() => handlers.refresh()} />
+        {listButton(table, handlers)}
         {backRows(table, view, handlers)}
       </Box>
     )

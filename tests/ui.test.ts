@@ -1340,3 +1340,110 @@ describe('the retry failed button', () => {
     }
   })
 })
+
+describe('the list entry points', () => {
+  const noPr: Snapshot = { kind: 'no-pr', at: '2026-01-01T00:00:00Z', location: makeLocation(), account: { login: 'me', source: 'active' } }
+  const counts = { open: 18, yours: 3, requested: 2, at: '2026-01-01T00:00:00Z' }
+  const withCounts = (view: View, value: View['counts']): View => ({ ...view, counts: value })
+
+  test('the band without a PR shows the counts and the list button', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const ui = await rig.band($, surface, withCounts(viewFor(noPr, 120), counts), handlersFor(calls, { openList: () => void calls.push('openList') }))
+      expect(await textOf(ui)).toBe('no PR for feat/things · 18 open · 3 yours · 2 review requested · @me  l: list')
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['l'])
+      await ui.press({ key: 'band-list' })
+      expect(calls).toEqual(['openList'])
+      await ui.unmount()
+    }
+  })
+
+  test('zero parts are left out, except open; no counts leaves them all out', async ($, on) => {
+    const rig = createRig(on)
+    const zero = await rig.band($, 'terminal', withCounts(viewFor(noPr, 120), { ...counts, yours: 0, requested: 0, open: 0 }), handlersFor([]))
+    expect(await textOf(zero)).toBe('no PR for feat/things · 0 open · @me')
+    const some = await rig.band($, 'terminal', withCounts(viewFor(noPr, 120), { ...counts, yours: 0 }), handlersFor([]))
+    expect(await textOf(some)).toBe('no PR for feat/things · 18 open · 2 review requested · @me')
+    const none = await rig.band($, 'terminal', withCounts(viewFor(noPr, 120), null), handlersFor([]))
+    expect(await textOf(none)).toBe('no PR for feat/things · @me')
+    expect(await none.find({ key: 'band-list' })).toBeUndefined()
+  })
+
+  test('the no-PR band fits every width and keeps the list button', async ($, on) => {
+    const rig = createRig(on)
+    const kept: string[][] = []
+    for (const columns of [160, 80, 60, 50, 40]) {
+      const ui = await rig.band($, 'terminal', withCounts(viewFor(noPr, columns), counts), handlersFor([], { openList: () => {} }))
+      const text = await textOf(ui)
+      for (const row of text.split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      expect(text).toContain('l: list')
+      kept.push(['18 open', '3 yours', 'review requested', '@me'].filter((part) => text.includes(part)))
+      await ui.unmount()
+    }
+    expect(kept[0]).toHaveLength(4)
+    expect(kept.at(-1)).toEqual([])
+    for (let index = 1; index < kept.length; index += 1) expect(kept[index - 1]).toEqual(expect.arrayContaining(kept[index] ?? []))
+  })
+
+  test('without the handler there is no list button', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.band($, 'terminal', withCounts(viewFor(noPr, 120), counts), handlersFor([]))
+    expect(await textOf(ui)).toBe('no PR for feat/things · 18 open · 3 yours · 2 review requested · @me')
+  })
+
+  test('the band with a PR adds "18 open" and drops it before anything else', async ($, on) => {
+    const rig = createRig(on)
+    const base = prView({ checks: [makeCheck()] }, 160)
+    const wide = await rig.band($, 'terminal', withCounts(base, counts), handlersFor([]))
+    const text = await textOf(wide)
+    expect(text).toContain('18 open')
+    expect(text.indexOf('18 open')).toBeLessThan(text.indexOf('@me'))
+    expect(hotkeysOf(await wide.findAll({ type: 'Button' }))).toEqual(['d', 'o'])
+    const without = await rig.band($, 'terminal', base, handlersFor([]))
+    expect(await textOf(without)).not.toContain('18 open')
+    // Whenever the counted band lacks "18 open", it reads exactly as the plain band: nothing else went first.
+    let dropped = 0
+    for (let columns = 160; columns >= 40; columns -= 2) {
+      const counted = await rig.band($, 'terminal', withCounts({ ...base, columns }, counts), handlersFor([]))
+      const plain = await rig.band($, 'terminal', { ...base, columns }, handlersFor([]))
+      const countedText = await textOf(counted)
+      for (const row of countedText.split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      if (!countedText.includes('18 open')) {
+        dropped += 1
+        expect(countedText).toBe(await textOf(plain))
+      }
+      await counted.unmount()
+      await plain.unmount()
+    }
+    expect(dropped).toBeGreaterThan(0)
+  })
+
+  test('the pane header has an all PRs button when the list is available', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const ui = await rig.pane($, surface, prView({ title: 'A fairly long title for the header row to cut', checks: [makeCheck()] }, 60), handlersFor(calls, { openList: () => void calls.push('openList') }))
+      const lines = (await textOf(ui)).split('\n')
+      expect(lines[0]).toContain('l: all PRs')
+      for (const row of lines.slice(0, 4)) expect(cellWidth(row)).toBeLessThanOrEqual(60)
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toContain('l')
+      await ui.press({ key: 'pane-list' })
+      expect(calls).toEqual(['openList'])
+      await ui.unmount()
+    }
+  })
+
+  test('the pane has no all PRs button without the handler', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', prView({ checks: [makeCheck()] }, 100), handlersFor([]))
+    expect(await ui.find({ key: 'pane-list' })).toBeUndefined()
+    expect(await textOf(ui)).not.toContain('all PRs')
+  })
+
+  test('the pane without a PR offers the list too', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', viewFor(noPr, 80), handlersFor([], { openList: () => {} }))
+    expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['r', 'l'])
+  })
+})

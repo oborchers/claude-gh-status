@@ -19,6 +19,8 @@ const BUTTON_GAP = 2
 const BUTTON_SPACING = 1
 const ACCOUNT_MAX = 24
 const CANCEL_HOTKEY = 'n'
+/** Priority number of the '18 open' segment: above every button's, so it goes first. */
+const OPEN_PRIORITY = 100
 
 type Run = { text: string; color?: Tone; isDim?: boolean }
 type Segment = Fittable & { key: string; runs: Run[]; button?: { hotkey: string; label: string; onPress: () => void } }
@@ -193,6 +195,12 @@ function prBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extrac
   // Stale data: the hint goes right before the account and is dropped right after it.
   const hint: Run | null = snapshot.stale ? { text: unavailableHint(snapshot.stale), color: 'pending' } : null
   if (hint !== null) segments.push({ key: 'hint', runs: [hint], priority: 5.5, width: cellWidth(hint.text) })
+  // Lowest priority of all, dropped before any button.
+  const counts = view.counts
+  if (counts !== null && counts !== undefined) {
+    const open: Run = { text: `${counts.open} open`, isDim: true }
+    segments.push({ key: 'open', runs: [open], priority: OPEN_PRIORITY, width: cellWidth(open.text) })
+  }
   const account: Run = { text: truncate(`@${snapshot.account.login}`, ACCOUNT_MAX), isDim: true }
   segments.push({ key: 'account', runs: [account], priority: 6, width: cellWidth(account.text) })
 
@@ -299,6 +307,46 @@ function confirmBand(table: UiTable, view: View, handlers: Handlers, pending: Pe
   )
 }
 
+/** 'no PR for feat/x · 18 open · 3 yours · 2 review requested · @me' and the list button. */
+function noPrBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extract<Snapshot, { kind: 'no-pr' }>, headline: string): RenderElement {
+  const { Box, Button, Text } = table
+  const columns = Math.max(10, view.columns)
+  const { counts } = view
+  const parts: (Fittable & { key: string; text: string })[] = []
+  const add = (key: string, text: string, priority: number) => parts.push({ key, text, priority, width: cellWidth(text) })
+  add('headline', truncate(headline, columns), 1)
+  if (counts !== null && counts !== undefined) {
+    add('open', `${counts.open} open`, 3)
+    if (counts.yours > 0) add('yours', `${counts.yours} yours`, 4)
+    if (counts.requested > 0) add('requested', `${counts.requested} review requested`, 5)
+  }
+  add('account', truncate(`@${snapshot.account.login}`, ACCOUNT_MAX), 6)
+  const openList = handlers.openList
+  const listWidth = 'l'.length + 2 + cellWidth('list')
+  const all: (Fittable & { key: string; text: string })[] = openList === undefined ? parts : [...parts, { key: 'band-list', text: '', priority: 2, width: listWidth }]
+  const kept = fitSegments(all, columns, 3)
+  const texts = kept.filter((part) => part.key !== 'band-list')
+  const hasButton = openList !== undefined && kept.some((part) => part.key === 'band-list')
+  const nodes: RenderElement[] = []
+  texts.forEach((part, index) => {
+    if (index > 0) nodes.push(cell(table, <Text dimColor>{SEPARATOR}</Text>))
+    nodes.push(
+      cell(
+        table,
+        <Text dimColor wrap="truncate-end">
+          {part.text}
+        </Text>,
+      ),
+    )
+  })
+  if (hasButton) nodes.push(cell(table, <Button key="band-list" plain hotkey="l" label="list" onPress={() => openList()} />, BUTTON_GAP))
+  return (
+    <Box flexDirection="row" flexWrap="nowrap">
+      {nodes}
+    </Box>
+  )
+}
+
 /** The band for a view, or null when nothing should be drawn. */
 export function renderBand(table: UiTable, view: View, handlers: Handlers): RenderElement | null {
   const { Box, Text } = table
@@ -313,17 +361,7 @@ export function renderBand(table: UiTable, view: View, handlers: Handlers): Rend
 
   const line = snapshotLine(snapshot, 'band', view.nowMs)
   if (line === null) return null
-  if (snapshot.kind === 'no-pr') {
-    const account = `@${snapshot.account.login}`
-    const room = columns - cellWidth(SEPARATOR) - cellWidth(account)
-    const text = truncate(line.text, Math.max(1, room > 8 ? room : columns))
-    return (
-      <Box>
-        <Text dimColor>{text}</Text>
-        {room > 8 && <Text dimColor>{`${SEPARATOR}${account}`}</Text>}
-      </Box>
-    )
-  }
+  if (snapshot.kind === 'no-pr') return noPrBand(table, view, handlers, snapshot, line.text)
   return (
     <Box>
       <Text dimColor={line.isDim} color={line.isDim ? undefined : view.palette.pending}>
