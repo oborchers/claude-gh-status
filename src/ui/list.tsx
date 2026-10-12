@@ -1,5 +1,6 @@
-// The list pane: the repository's open pull requests, grouped, one page at a time,
-// one row each. A row is a plain Button; its columns are sized per page so they line up.
+// The list pane: the repository's open pull requests, grouped, one page at a time.
+// A pull request takes two lines and a blank one: the title line (status symbol,
+// title, labels) and a dim line of facts. Both lines are Buttons that select it.
 
 import type { RenderElement } from 'claude-code'
 
@@ -7,7 +8,7 @@ import type { ListGroup, ListItem, PrList } from '../model'
 import { PAGE_SIZE, groupItems, paginate } from '../list'
 import { relativeTime } from '../status'
 import { cellWidth, fitSegments, headingLine, retryText, truncate, unavailableText } from './format'
-import { tone } from './colors'
+import { mutedLabelColor, tone } from './colors'
 import type { Palette, Tone } from './colors'
 import type { ListHandlers, ListView, UiTable } from './contract'
 
@@ -16,13 +17,13 @@ const GAP = '  '
 const GAP_WIDTH = 2
 const MARKER = '▸ '
 const NO_MARKER = '  '
+const NO_STATUS = ' '
 const DRAFT = 'draft '
 const FOOTER_GAP = 2
-/** Title cells a row keeps before any other column is dropped. */
+/** Cells before the title: the marker column, the status symbol and a space. */
+const PREFIX_WIDTH = 4
+/** Title cells a line keeps before any label is dropped. */
 const TITLE_FLOOR = 24
-const LABELS_MAX = 40
-/** Relative luminance above which a label gets black text; GitHub's own mid-tone colors (red, green) get white. */
-const LABEL_LIGHT = 0.25
 const GROUP_HEADINGS: Record<ListGroup, string> = {
   yours: 'Yours',
   requested: 'Review requested from you',
@@ -31,182 +32,166 @@ const GROUP_HEADINGS: Record<ListGroup, string> = {
 }
 const REVIEW_TEXT = { approved: 'approved', 'changes-requested': 'changes requested', 'review-required': 'review required' } as const
 
-type Run = { text: string; color?: Tone; background?: string; textColor?: string; isDim?: boolean }
-type ColumnKey = 'labels' | 'author' | 'age' | 'checks' | 'review' | 'comments'
-type Column = { key: ColumnKey; width: number; cells: Map<string, Run[]> }
-
-/** Columns dropped when the row is too wide, first to last. */
-const DROP_ORDER: readonly ColumnKey[] = ['comments', 'review', 'age', 'author', 'labels']
+/** A piece of a line: `color` is a palette tone, `hex` a literal color; neither draws in the default text color. */
+type Run = { text: string; color?: Tone; hex?: string; isDim?: boolean; isBold?: boolean }
 
 const runsWidth = (runs: Run[]): number => runs.reduce((sum, run) => sum + cellWidth(run.text), 0)
 
-const isHex = (value: string): boolean => value.length === 6 && !/[^0-9a-fA-F]/.test(value)
-
-/** Black or white, whichever reads better on a label's GitHub hex color (WCAG relative luminance). */
-export function labelTextColor(hex: string): string {
-  const value = isHex(hex) ? hex : '808080'
-  const channel = (offset: number): number => {
-    const part = parseInt(value.slice(offset, offset + 2), 16) / 255
-    return part <= 0.03928 ? part / 12.92 : Math.pow((part + 0.055) / 1.055, 2.4)
-  }
-  const luminance = 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
-  return luminance > LABEL_LIGHT ? '#000000' : '#ffffff'
+/** True when every pending check is still queued, none runs. */
+function isOnlyQueued(item: ListItem): boolean {
+  const { checks } = item
+  return checks !== null && checks.pending > 0 && (checks.queued ?? 0) >= checks.pending
 }
 
-function labelRuns(item: ListItem, max: number): Run[] {
-  const runs: Run[] = []
-  let used = 0
-  for (const [index, label] of item.labels.entries()) {
-    const hasColor = isHex(label.color)
-    const rest = item.labels.length - index - 1
-    const reserve = rest > 0 ? cellWidth(` +${rest}`) : 0
-    const text = ` ${label.name} `
-    const width = cellWidth(text) + (runs.length > 0 ? 1 : 0)
-    if (used + width + reserve > max) {
-      if (runs.length === 0) {
-        // Not even one label fits whole: cut it, so the row still shows that it has labels.
-        const room = Math.max(3, max - 2)
-        runs.push({ text: ` ${truncate(label.name, room)} `, background: hasColor ? `#${label.color}` : undefined, textColor: hasColor ? labelTextColor(label.color) : undefined, isDim: !hasColor })
-        used = runsWidth(runs)
-        if (rest > 0 && used + cellWidth(` +${rest}`) <= max) runs.push({ text: ` +${rest}`, isDim: true })
-      } else {
-        runs.push({ text: ` +${item.labels.length - index}`, isDim: true })
-      }
-      return runs
+/** The symbol before a title and its tone: the state of the checks at a glance. */
+function statusOf(item: ListItem): Run {
+  const { checks } = item
+  if (checks === null || checks.total <= 0) return { text: NO_STATUS }
+  if (checks.failed > 0) return { text: '✗', color: 'failure' }
+  if (checks.pending > 0) return { text: isOnlyQueued(item) ? '◷' : '●', color: 'pending' }
+  return { text: '✓', color: 'success' }
+}
+
+function checksRun(item: ListItem): Run | null {
+  const { checks } = item
+  if (checks === null || checks.total <= 0) return null
+  if (checks.failed > 0) return { text: `${checks.failed}/${checks.total} checks failing`, color: 'failure' }
+  if (checks.pending > 0) return { text: `${checks.pending}/${checks.total} checks ${isOnlyQueued(item) ? 'queued' : 'running'}`, isDim: true }
+  return { text: `${checks.passed}/${checks.total} passing`, isDim: true }
+}
+
+function reviewRun(item: ListItem): Run | null {
+  switch (item.reviewDecision) {
+    case 'approved':
+      return { text: REVIEW_TEXT.approved, color: 'success' }
+    case 'changes-requested':
+      return { text: REVIEW_TEXT['changes-requested'], isDim: true }
+    case 'review-required':
+      return { text: REVIEW_TEXT['review-required'], isDim: true }
+    default:
+      return null
+  }
+}
+
+/**
+ * The labels that fit `room` cells, names only, two spaces apart, in the GitHub
+ * color muted toward grey. Labels that do not fit are dropped from the end and
+ * counted as `+N`; when not even that fits, nothing.
+ */
+function labelRuns(item: ListItem, room: number): Run[] {
+  const { labels } = item
+  const build = (shown: number): Run[] => {
+    const runs: Run[] = []
+    for (const label of labels.slice(0, shown)) {
+      if (runs.length > 0) runs.push({ text: GAP })
+      runs.push({ text: label.name, hex: mutedLabelColor(label.color) })
     }
-    if (runs.length > 0) runs.push({ text: ' ' })
-    runs.push({ text, background: hasColor ? `#${label.color}` : undefined, textColor: hasColor ? labelTextColor(label.color) : undefined, isDim: !hasColor })
-    used += width
+    if (shown < labels.length) {
+      if (runs.length > 0) runs.push({ text: GAP })
+      runs.push({ text: `+${labels.length - shown}`, isDim: true })
+    }
+    return runs
+  }
+  for (let shown = labels.length; shown >= 0; shown -= 1) {
+    const runs = build(shown)
+    if (runsWidth(runs) <= room) return runs
+  }
+  return []
+}
+
+/** The runs cut to `max` cells; the one that crosses the edge ends in an ellipsis. */
+function fitRuns(runs: Run[], max: number): Run[] {
+  const kept: Run[] = []
+  let used = 0
+  for (const run of runs) {
+    const width = cellWidth(run.text)
+    if (used + width <= max) {
+      kept.push(run)
+      used += width
+      continue
+    }
+    const text = truncate(run.text, max - used)
+    if (text !== '') kept.push({ ...run, text })
+    break
+  }
+  return kept
+}
+
+/** The facts line: '#15 · @oborchers · opened 2 h ago · 1/18 checks failing · review required · 💬 2'. */
+function metaRuns(item: ListItem, nowMs: number): Run[] {
+  const facts: Run[] = [{ text: `#${item.number}`, isDim: true }]
+  if (item.author !== null) facts.push({ text: `@${item.author}`, isDim: true })
+  facts.push({ text: `opened ${relativeTime(item.createdAt, nowMs)}`, isDim: true })
+  for (const run of [checksRun(item), reviewRun(item)]) if (run !== null) facts.push(run)
+  if (item.comments > 0) facts.push({ text: `💬 ${item.comments}`, isDim: true })
+  const runs: Run[] = []
+  for (const fact of facts) {
+    if (runs.length > 0) runs.push({ text: SEPARATOR, isDim: true })
+    runs.push(fact)
   }
   return runs
 }
 
-function checksRuns(item: ListItem): Run[] {
-  const { checks } = item
-  if (checks === null || checks.total <= 0) return []
-  if (checks.failed > 0) return [{ text: `✗ ${checks.failed}/${checks.total}`, color: 'failure' }]
-  if (checks.pending > 0) return [{ text: `● ${checks.pending}/${checks.total}`, color: 'pending' }]
-  return [{ text: `✓ ${checks.passed}/${checks.total}`, color: 'success' }]
-}
-
-function reviewRuns(item: ListItem): Run[] {
-  switch (item.reviewDecision) {
-    case 'approved':
-      return [{ text: REVIEW_TEXT.approved, color: 'success' }]
-    case 'changes-requested':
-      return [{ text: REVIEW_TEXT['changes-requested'], color: 'failure' }]
-    case 'review-required':
-      return [{ text: REVIEW_TEXT['review-required'], isDim: true }]
-    default:
-      return []
-  }
-}
-
-/** Builds the columns of a page: each holds the cells of its rows and the width of the widest. */
-function columnsFor(items: ListItem[], nowMs: number, labelsMax: number): Column[] {
-  const build = (key: ColumnKey, cell: (item: ListItem) => Run[]): Column => {
-    const cells = new Map<string, Run[]>()
-    let width = 0
-    for (const item of items) {
-      const runs = cell(item)
-      cells.set(item.id, runs)
-      width = Math.max(width, runsWidth(runs))
-    }
-    return { key, width, cells }
-  }
-  return [
-    build('labels', (item) => labelRuns(item, labelsMax)),
-    build('author', (item) => (item.author === null ? [] : [{ text: `@${item.author}`, isDim: true }])),
-    build('age', (item) => [{ text: relativeTime(item.createdAt, nowMs), isDim: true }]),
-    build('checks', checksRuns),
-    build('review', reviewRuns),
-    build('comments', (item) => (item.comments > 0 ? [{ text: `💬 ${item.comments}`, isDim: true }] : [])),
-  ].filter((column) => column.width > 0)
-}
-
-type Layout = {
-  columns: Column[]
-  numberWidth: number
-  titleWidth: number
-  hasDraft: boolean
-}
-
-/** Which columns survive in `columns` cells, and how wide the title is. Columns drop in DROP_ORDER, then the title shrinks. */
-function layoutFor(items: ListItem[], nowMs: number, columns: number): Layout {
-  const numberWidth = items.reduce((max, item) => Math.max(max, cellWidth(`#${item.number}`)), 0)
-  const hasDraft = items.some((item) => item.isDraft)
-  const titleFull = items.reduce((max, item) => Math.max(max, cellWidth(item.title)), 1)
-  const labelsMax = Math.min(LABELS_MAX, Math.max(8, Math.floor(columns / 3)))
-  let kept = columnsFor(items, nowMs, labelsMax)
-  const fixed = (): number => cellWidth(NO_MARKER) + (hasDraft ? cellWidth(DRAFT) : 0) + numberWidth
-  const others = (): number => kept.reduce((sum, column) => sum + GAP_WIDTH + column.width, 0)
-  const floor = Math.min(titleFull, TITLE_FLOOR)
-  for (const key of DROP_ORDER) {
-    if (fixed() + GAP_WIDTH + floor + others() <= columns) break
-    kept = kept.filter((column) => column.key !== key)
-  }
-  // Last resort on a very narrow pane: the checks go too, the number and a cut title stay.
-  if (fixed() + GAP_WIDTH + Math.min(titleFull, 4) + others() > columns) kept = kept.filter((column) => column.key !== 'checks')
-  const room = columns - fixed() - GAP_WIDTH - others()
-  return { columns: kept, numberWidth, titleWidth: Math.max(1, Math.min(titleFull, room)), hasDraft }
-}
-
-function drawRun(table: UiTable, palette: Palette, run: Run, isRowDim: boolean): RenderElement {
+function drawRun(table: UiTable, palette: Palette, run: Run): RenderElement {
   const { Text } = table
   return (
-    <Text color={run.textColor ?? tone(palette, run.color)} backgroundColor={run.background} dimColor={run.isDim === true || isRowDim ? true : undefined} wrap="truncate-end">
+    <Text color={run.hex ?? tone(palette, run.color)} bold={run.isBold === true ? true : undefined} dimColor={run.isDim === true ? true : undefined} wrap="truncate-end">
       {run.text}
     </Text>
   )
 }
 
-function pad(table: UiTable, width: number): RenderElement | null {
-  const { Text } = table
-  return width > 0 ? <Text>{' '.repeat(width)}</Text> : null
-}
-
-function row(table: UiTable, view: ListView, handlers: ListHandlers, layout: Layout, item: ListItem): RenderElement {
+/** The title line of a pull request: marker, status symbol, title (bold), labels. A Button that selects it. */
+function titleLine(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
   const { Button, Text } = table
-  const isDim = item.isDraft
   const isSelected = view.selectedNumber === item.number
-  const parts: (RenderElement | null)[] = []
-  parts.push(
+  // On a very narrow pane the draft prefix goes first; the title is dim anyway.
+  const hasDraftPrefix = item.isDraft && columns - PREFIX_WIDTH - cellWidth(DRAFT) >= 4
+  const room = Math.max(1, columns - PREFIX_WIDTH - (hasDraftPrefix ? cellWidth(DRAFT) : 0))
+  const titleWidth = cellWidth(item.title)
+  const everyLabel = labelRuns(item, Number.MAX_SAFE_INTEGER)
+  let labels: Run[] = []
+  if (everyLabel.length > 0) {
+    // The title shrinks to its floor before a label is dropped.
+    const fitsWhole = titleWidth + GAP_WIDTH + runsWidth(everyLabel) <= room
+    const labelRoom = fitsWhole ? room : room - Math.min(titleWidth, TITLE_FLOOR) - GAP_WIDTH
+    labels = labelRoom > 0 ? labelRuns(item, labelRoom) : []
+  }
+  const title = truncate(item.title, Math.max(1, room - (labels.length > 0 ? GAP_WIDTH + runsWidth(labels) : 0)))
+  const parts: RenderElement[] = [
     <Text color={isSelected ? view.palette.pending : undefined} wrap="truncate-end">
       {isSelected ? MARKER : NO_MARKER}
     </Text>,
-  )
-  if (layout.hasDraft) {
-    parts.push(
-      <Text dimColor wrap="truncate-end">
-        {item.isDraft ? DRAFT : ' '.repeat(cellWidth(DRAFT))}
-      </Text>,
-    )
-  }
-  const number = `#${item.number}`
-  parts.push(
-    <Text bold={isSelected ? true : undefined} dimColor={isDim ? true : undefined} wrap="truncate-end">
-      {number + ' '.repeat(layout.numberWidth - cellWidth(number))}
-    </Text>,
-  )
-  parts.push(<Text>{GAP}</Text>)
-  const title = truncate(item.title, layout.titleWidth)
-  parts.push(
-    <Text bold={isSelected ? true : undefined} dimColor={isDim ? true : undefined} wrap="truncate-end">
-      {title}
-    </Text>,
-  )
-  parts.push(pad(table, layout.titleWidth - cellWidth(title)))
-  for (const column of layout.columns) {
-    const runs = column.cells.get(item.id) ?? []
+    drawRun(table, view.palette, statusOf(item)),
+    <Text>{' '}</Text>,
+  ]
+  if (hasDraftPrefix) parts.push(drawRun(table, view.palette, { text: DRAFT, isDim: true }))
+  parts.push(drawRun(table, view.palette, { text: title, isBold: true, isDim: item.isDraft }))
+  if (labels.length > 0) {
     parts.push(<Text>{GAP}</Text>)
-    for (const run of runs) parts.push(drawRun(table, view.palette, run, isDim))
-    parts.push(pad(table, column.width - runsWidth(runs)))
+    for (const run of labels) parts.push(drawRun(table, view.palette, run))
   }
   return (
-    <Button key={`pr-${item.number}`} plain label={`#${item.number} ${item.title}`} dimColor={isDim ? true : undefined} onPress={() => handlers.selectPr(item.number)}>
-      {parts.filter((part): part is RenderElement => part !== null)}
+    <Button key={`pr-${item.number}`} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
+      {parts}
     </Button>
   )
+}
+
+/** The facts line: indented under the title, dim, cut at the end. A second Button that selects the same pull request. */
+function metaLine(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
+  const { Button, Text } = table
+  const runs = fitRuns(metaRuns(item, view.nowMs), Math.max(1, columns - PREFIX_WIDTH))
+  return (
+    <Button key={`pr-${item.number}-meta`} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
+      {[<Text>{' '.repeat(PREFIX_WIDTH)}</Text>, ...runs.map((run) => drawRun(table, view.palette, run))]}
+    </Button>
+  )
+}
+
+function blankLine(table: UiTable): RenderElement {
+  const { Text } = table
+  return <Text>{' '}</Text>
 }
 
 /** The summary line: '18 open · 1 to 25 · page 1 of 2 · drafts hidden', the account dim at the end. */
@@ -324,11 +309,6 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
 
   const viewer = list.account.login
   const page = paginate(groupItems(list.items, viewer), view.page + 1, PAGE_SIZE, view.hideDrafts)
-  const layout = layoutFor(
-    page.rows.map((entry) => entry.item),
-    view.nowMs,
-    columns,
-  )
   const lines: RenderElement[] = [headerLine(table, view, list, page)]
   if (list.problem) {
     const text = `showing last data from ${relativeTime(list.at, view.nowMs)}, ${unavailableText(list.problem)}, ${retryText(list.problem, view.nowMs)}`
@@ -338,12 +318,17 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
     lines.push(messageLine(table, view, view.hideDrafts && list.items.length > 0 ? 'Only drafts are open.' : 'No open pull requests.'))
   }
   let current: ListGroup | null = null
-  for (const entry of page.rows) {
+  for (const [index, entry] of page.rows.entries()) {
     if (entry.group !== current) {
+      // One blank line before every heading but the first.
+      if (current !== null) lines.push(blankLine(table))
       current = entry.group
       lines.push(messageLine(table, view, headingLine(GROUP_HEADINGS[entry.group], columns)))
     }
-    lines.push(row(table, view, handlers, layout, entry.item))
+    lines.push(titleLine(table, view, handlers, entry.item, columns))
+    lines.push(metaLine(table, view, handlers, entry.item, columns))
+    // One blank line between pull requests of a group, none after the last.
+    if (page.rows[index + 1]?.group === entry.group) lines.push(blankLine(table))
   }
   const footer = footerButtons(view, handlers, page.page < page.pageCount, page.page > 1, true)
   return (

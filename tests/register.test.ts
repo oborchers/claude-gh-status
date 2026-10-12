@@ -1570,6 +1570,8 @@ describe('the list of open pull requests', () => {
     await runPr($, 'ls')
     await world.clock.settle()
     expect(world.opened.filter(opened => opened.id === LIST)).toHaveLength(2)
+    // The list is known by the second open: one page of 10 in one group is a heading, 10 x 3 rows minus the last blank, header, footer and slack.
+    expect((world.opened.filter(opened => opened.id === LIST)[1] as { rows?: number }).rows).toBe(34)
   })
 
   test('a branch without a pull request: /pr opens the list', async ($, on) => {
@@ -1602,8 +1604,11 @@ describe('the list of open pull requests', () => {
     await world.clock.settle()
     const ui = await showList($)
     expect(await sees(ui, /#14580\b/)).toBe(true)
-    expect(await sees(ui, /#14556\b/)).toBe(true)
-    expect(await sees(ui, /#14551\b/)).toBe(false)
+    expect(await sees(ui, /#14571\b/)).toBe(true)
+    expect(await sees(ui, /#14570\b/)).toBe(false)
+    // Two buttons per pull request, ten pull requests per page.
+    expect((await ui.findAll({ type: 'Button' })).filter(button => /^pr-\d+$/.test(String(button.key)))).toHaveLength(10)
+    expect((await ui.findAll({ type: 'Button' })).filter(button => /^pr-\d+-meta$/.test(String(button.key)))).toHaveLength(10)
     await ui.unmount()
   })
 
@@ -1624,6 +1629,22 @@ describe('the list of open pull requests', () => {
     await ui.unmount()
   })
 
+  test('pressing the facts line of a row selects that pull request too', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'pr-14580-meta' })
+    await world.clock.settle()
+    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
+    expect(world.numberLookups()).toContain(14580)
+    const detail = await showPane($)
+    expect(await sees(detail, /PR #14580 \(selected\)/)).toBe(true)
+    await detail.unmount()
+    await ui.unmount()
+  })
+
   test('n and p page through the list and stop at both ends', async ($, on) => {
     const world = listWorld(on)
     await start($, world)
@@ -1633,11 +1654,16 @@ describe('the list of open pull requests', () => {
     expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
     expect(await sees(ui, /#14580\b/)).toBe(true)
     await ui.press({ key: 'list-next' })
-    expect(await sees(ui, /#14551\b/)).toBe(true)
+    expect(await sees(ui, /#14570\b/)).toBe(true)
     expect(await sees(ui, /#14580\b/)).toBe(false)
+    expect(await ui.find({ key: 'list-prev' })).toBeDefined()
+    await ui.press({ key: 'list-next' })
+    expect(await sees(ui, /#14551\b/)).toBe(true)
     expect(await ui.find({ key: 'list-next' })).toBeUndefined()
     await ui.press({ key: 'list-prev' })
+    await ui.press({ key: 'list-prev' })
     expect(await sees(ui, /#14580\b/)).toBe(true)
+    expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -1650,9 +1676,9 @@ describe('the list of open pull requests', () => {
     await ui.press({ key: 'list-next' })
     await ui.press({ key: 'list-drafts' })
     expect(await sees(ui, /#14580\b/)).toBe(true)
-    expect(await sees(ui, /#14556\b/)).toBe(false)
+    expect(await sees(ui, /#14576\b/)).toBe(false)
     await ui.press({ key: 'list-drafts' })
-    expect(await sees(ui, /#14556\b/)).toBe(true)
+    expect(await sees(ui, /#14576\b/)).toBe(true)
     await ui.unmount()
   })
 

@@ -2,8 +2,8 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
-import { COUNTS_QUERY, LIST_QUERY, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, groupItems, listDelayMs, normalizeList, paginate, pollDelayMs, requestedNumbersOf } from '../src/list'
-import type { ListItem, RepoLocation } from '../src/model'
+import { COUNTS_QUERY, LIST_QUERY, PAGE_SIZE, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, groupItems, listDelayMs, listRowCount, normalizeList, paginate, pollDelayMs, requestedNumbersOf } from '../src/list'
+import type { ListItem, PrList, RepoLocation } from '../src/model'
 
 const location: RepoLocation = { cwd: '/work/app', branch: 'feature', owner: 'acme', repo: 'app', pinnedLogin: null }
 
@@ -81,36 +81,36 @@ describe('queries', () => {
 describe('checksFrom', () => {
   test('success is passed, skipped counts only toward the total', () => {
     const checks = checksFrom(rollup([{ state: 'SUCCESS', count: 2 }, { state: 'SKIPPED', count: 12 }, { state: 'NEUTRAL', count: 1 }], []))
-    expect(checks).toEqual({ passed: 2, failed: 0, pending: 0, total: 15 })
+    expect(checks).toEqual({ passed: 2, failed: 0, pending: 0, queued: 0, total: 15 })
   })
 
   test('failure, timed out, cancelled, action required and startup failure are failed', () => {
     const states = ['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']
     const checks = checksFrom(rollup(states.map(state => ({ state, count: 1 })), [{ state: 'ERROR', count: 2 }]))
-    expect(checks).toEqual({ passed: 0, failed: 7, pending: 0, total: 7 })
+    expect(checks).toEqual({ passed: 0, failed: 7, pending: 0, queued: 0, total: 7 })
   })
 
-  test('queued, in progress, pending, waiting, requested and expected are pending', () => {
+  test('queued, in progress, pending, waiting, requested and expected are pending; all but in progress are queued', () => {
     const states = ['QUEUED', 'IN_PROGRESS', 'PENDING', 'WAITING', 'REQUESTED']
     const checks = checksFrom(rollup(states.map(state => ({ state, count: 1 })), [{ state: 'EXPECTED', count: 3 }, { state: 'PENDING', count: 1 }]))
-    expect(checks).toEqual({ passed: 0, failed: 0, pending: 9, total: 9 })
+    expect(checks).toEqual({ passed: 0, failed: 0, pending: 9, queued: 8, total: 9 })
   })
 
   test('check runs and commit statuses are summed', () => {
     const checks = checksFrom(rollup([{ state: 'SUCCESS', count: 3 }, { state: 'FAILURE', count: 1 }], [{ state: 'SUCCESS', count: 2 }, { state: 'PENDING', count: 1 }]))
-    expect(checks).toEqual({ passed: 5, failed: 1, pending: 1, total: 7 })
+    expect(checks).toEqual({ passed: 5, failed: 1, pending: 1, queued: 1, total: 7 })
   })
 
   test('zero counts, stale and completed only add what is counted', () => {
     const checks = checksFrom(rollup([{ state: 'STALE', count: 1 }, { state: 'COMPLETED', count: 0 }, { state: 'SUCCESS', count: 0 }], []))
-    expect(checks).toEqual({ passed: 0, failed: 0, pending: 0, total: 1 })
+    expect(checks).toEqual({ passed: 0, failed: 0, pending: 0, queued: 0, total: 1 })
   })
 
   test('no rollup and malformed rollups give null or zeros, never throw', () => {
     expect(checksFrom(null)).toBeNull()
     expect(checksFrom({ state: 'SUCCESS' })).toBeNull()
-    expect(checksFrom({ contexts: {} })).toEqual({ passed: 0, failed: 0, pending: 0, total: 0 })
-    expect(checksFrom({ contexts: { checkRunCountsByState: [null, 4, { state: 'SUCCESS', count: 'x' }, { count: 1 }] } })).toEqual({ passed: 0, failed: 0, pending: 0, total: 1 })
+    expect(checksFrom({ contexts: {} })).toEqual({ passed: 0, failed: 0, pending: 0, queued: 0, total: 0 })
+    expect(checksFrom({ contexts: { checkRunCountsByState: [null, 4, { state: 'SUCCESS', count: 'x' }, { count: 1 }] } })).toEqual({ passed: 0, failed: 0, pending: 0, queued: 0, total: 1 })
   })
 })
 
@@ -132,7 +132,7 @@ describe('normalizeList', () => {
       reviewDecision: 'approved',
       requestedFromViewer: false,
       hasOtherRequests: false,
-      checks: { passed: 4, failed: 0, pending: 0, total: 4 },
+      checks: { passed: 4, failed: 0, pending: 0, queued: 0, total: 4 },
       comments: 2,
     })
   })
@@ -301,8 +301,11 @@ describe('paginate', () => {
     expect(paginate(grouped, 1, 25, false).rows.map(row => row.group)).toEqual(['yours', 'requested', 'waiting', 'other'])
   })
 
-  test('defaults the page size to 25', () => {
-    expect(paginate(crowd(), 1, undefined, false).rows).toHaveLength(25)
+  test('defaults the page size to 10', () => {
+    expect(PAGE_SIZE).toBe(10)
+    expect(paginate(crowd(), 1, undefined, false).rows).toHaveLength(10)
+    expect(paginate(crowd(), 4, undefined, false).rows).toHaveLength(3)
+    expect(paginate(crowd(), 1, undefined, false).pageCount).toBe(4)
   })
 
   test('hideDrafts filters before paging', () => {
@@ -325,6 +328,41 @@ describe('paginate', () => {
   test('an empty list is one empty page', () => {
     const page = paginate({ yours: [], requested: [], waiting: [], other: [] }, 4, 25, false)
     expect(page).toEqual({ rows: [], page: 1, pageCount: 1, first: 0, last: 0, total: 0 })
+  })
+})
+
+describe('listRowCount', () => {
+  const account = { login: 'me', source: 'active' } as const
+  const listOf = (items: ListItem[]): PrList => ({ kind: 'list', at: '2026-10-12T11:59:00Z', location, account, items, total: items.length, isTruncated: false })
+  const others = (count: number): ListItem[] => Array.from({ length: count }, (_, at) => item(100 + at))
+
+  test('asks for a few rows while there is no list', () => {
+    expect(listRowCount(null, 0, false)).toBe(6)
+    expect(listRowCount({ kind: 'loading', at: '' }, 0, false)).toBe(6)
+  })
+
+  test('one group: 3 rows per pull request minus the last blank, a heading, header and footer', () => {
+    // 1 pull request: heading + 2 lines = 3, plus 4 for the header, the footer and slack.
+    expect(listRowCount(listOf(others(1)), 0, false)).toBe(7)
+    // 10 pull requests: heading + 30 - 1 = 30, plus 4.
+    expect(listRowCount(listOf(others(10)), 0, false)).toBe(34)
+  })
+
+  test('each further group adds its heading and one blank line before it', () => {
+    const items = [item(1, { author: 'me' }), item(2, { author: 'me' }), item(3, { requestedFromViewer: true }), item(4), item(5)]
+    // yours 2 PRs: 1 + 5, requested 1 PR: 1 + 2 + 1 blank, other 2 PRs: 1 + 5 + 1 blank, plus 4.
+    expect(listRowCount(listOf(items), 0, false)).toBe(6 + 4 + 7 + 4)
+  })
+
+  test('follows the page and the draft filter, and stays within 40', () => {
+    const crowded = others(24)
+    // Page 3 holds the last 4: heading + 4 * 3 - 1, plus 4.
+    expect(listRowCount(listOf(crowded), 2, false)).toBe(12 + 4)
+    const drafts = crowded.map((entry, at) => (at < 20 ? { ...entry, isDraft: true } : entry))
+    expect(listRowCount(listOf(drafts), 0, true)).toBe(12 + 4)
+    const groups = [item(1, { author: 'me' }), item(2, { requestedFromViewer: true }), item(3, { hasOtherRequests: true }), ...others(7)]
+    // Four groups on one page: 3 + 4 + 4 + 22 rows, plus 4. The most a page of 10 asks for stays below the cap.
+    expect(listRowCount(listOf(groups), 0, false)).toBe(37)
   })
 })
 

@@ -14,7 +14,7 @@ import { backoffMs, isTransient, reasonOf } from './scheduler'
 export const LIST_LIMIT = 100
 
 /** Rows per page of the list. */
-export const PAGE_SIZE = 25
+export const PAGE_SIZE = 10
 
 /** The list is read again this often while its pane is open. */
 export const LIST_POLL_MS = 60_000
@@ -133,6 +133,9 @@ const FAILED = new Set(['FAILURE', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 
 /** Pending: QUEUED, IN_PROGRESS, PENDING, WAITING, REQUESTED and EXPECTED (a commit status). */
 const PENDING = new Set(['QUEUED', 'IN_PROGRESS', 'PENDING', 'WAITING', 'REQUESTED', 'EXPECTED'])
 
+/** Pending checks that have not started: everything pending except IN_PROGRESS. */
+const QUEUED = new Set(['QUEUED', 'PENDING', 'WAITING', 'REQUESTED', 'EXPECTED'])
+
 /**
  * The counts of a statusCheckRollup. passed = SUCCESS; failed = FAILURE +
  * TIMED_OUT + CANCELLED + ACTION_REQUIRED + STARTUP_FAILURE + ERROR; pending =
@@ -144,7 +147,7 @@ const PENDING = new Set(['QUEUED', 'IN_PROGRESS', 'PENDING', 'WAITING', 'REQUEST
 export function checksFrom(rollup: unknown): ListChecks | null {
   const contexts = asObj(asObj(rollup)?.contexts)
   if (contexts === null) return null
-  const checks: ListChecks = { passed: 0, failed: 0, pending: 0, total: 0 }
+  const checks: ListChecks = { passed: 0, failed: 0, pending: 0, queued: 0, total: 0 }
   for (const key of ['checkRunCountsByState', 'statusContextCountsByState']) {
     const entries = contexts[key]
     if (!Array.isArray(entries)) continue
@@ -156,7 +159,10 @@ export function checksFrom(rollup: unknown): ListChecks | null {
       checks.total += count
       if (PASSED.has(state)) checks.passed += count
       else if (FAILED.has(state)) checks.failed += count
-      else if (PENDING.has(state)) checks.pending += count
+      else if (PENDING.has(state)) {
+        checks.pending += count
+        if (QUEUED.has(state)) checks.queued = (checks.queued ?? 0) + count
+      }
     }
   }
   return checks
@@ -415,12 +421,22 @@ export function pollDelayMs(delay: number, rateLimit: RateLimit | null): number 
   return rateLimit !== null && rateLimit.remaining < LOW_RATE_REMAINING ? Math.max(delay, LOW_RATE_POLL_MS) : delay
 }
 
-/** Rows the list pane needs for its current page: the page's rows, a header per group shown, and the title and footer lines. */
+/** Terminal rows one pull request takes: title line, meta line, blank line. */
+export const ROWS_PER_PR = 3
+
+/**
+ * Rows the list pane needs for its current page: 3 per pull request, minus the
+ * blank after the last one of each group, a heading per group, a blank before
+ * every heading but the first, and 4 for the header, the footer and slack for a
+ * stale hint or a wrapped footer. At most 40.
+ */
 export function listRowCount(list: PrList | null, page: number, hideDrafts: boolean): number {
   if (list === null || list.kind !== 'list') return 6
   const shown = paginate(groupItems(list.items, list.account.login), page + 1, PAGE_SIZE, hideDrafts)
   const groups = new Set(shown.rows.map(row => row.group)).size
-  return Math.min(40, Math.max(6, shown.rows.length + groups + 4))
+  // Per group: its heading (+1) and no blank after its last pull request (-1); between groups, one blank.
+  const body = shown.rows.length * ROWS_PER_PR + Math.max(0, groups - 1)
+  return Math.min(40, Math.max(6, body + 4))
 }
 
 /** The highest zero-based page of the list under the current draft filter. */

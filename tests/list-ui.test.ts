@@ -3,10 +3,11 @@ import type { Engine, Mounted as MountedOf } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import type { ListItem, PrList } from '../src/model'
-import { PALETTES } from '../src/ui/colors'
+import { relativeTime } from '../src/status'
+import { PALETTES, mutedLabelColor } from '../src/ui/colors'
 import type { ListHandlers, ListView } from '../src/ui/contract'
 import { cellWidth } from '../src/ui/format'
-import { labelTextColor, renderList } from '../src/ui/list'
+import { renderList } from '../src/ui/list'
 import { makeLocation } from './fixtures/pr-builder'
 
 const NOW = Date.parse('2026-10-12T12:00:00Z')
@@ -115,20 +116,19 @@ function nodesOf(node: unknown): Node[] {
 
 const hotkeysOf = async (ui: Mounted): Promise<string[]> => (await ui.findAll({ type: 'Button' })).flatMap((button) => (typeof button.props.hotkey === 'string' ? [button.props.hotkey] : []))
 
-describe('labelTextColor', () => {
-  test('picks black on light colors and white on dark ones', () => {
-    expect(labelTextColor('ffffff')).toBe('#000000')
-    expect(labelTextColor('fbca04')).toBe('#000000')
-    expect(labelTextColor('a2eeef')).toBe('#000000')
-    expect(labelTextColor('000000')).toBe('#ffffff')
-    expect(labelTextColor('0e8a16')).toBe('#ffffff')
-    expect(labelTextColor('d93f0b')).toBe('#ffffff')
-    expect(labelTextColor('5319e7')).toBe('#ffffff')
+describe('mutedLabelColor', () => {
+  test('mixes the GitHub color 35% toward the neutral #9aa0b0', () => {
+    expect(mutedLabelColor('d73a4a')).toBe('#c25e6e')
+    expect(mutedLabelColor('000000')).toBe('#36383e')
+    expect(mutedLabelColor('ffffff')).toBe('#dcdee3')
+    expect(mutedLabelColor('9aa0b0')).toBe('#9aa0b0')
+    expect(mutedLabelColor('0E8A16')).toBe(mutedLabelColor('0e8a16'))
   })
 
-  test('falls back for a color that is not six hex digits', () => {
-    expect(['#000000', '#ffffff']).toContain(labelTextColor(''))
-    expect(['#000000', '#ffffff']).toContain(labelTextColor('nope'))
+  test('falls back to the neutral for a color that is not six hex digits', () => {
+    expect(mutedLabelColor('')).toBe('#9aa0b0')
+    expect(mutedLabelColor('nope')).toBe('#9aa0b0')
+    expect(mutedLabelColor('12345')).toBe('#9aa0b0')
   })
 })
 
@@ -179,7 +179,7 @@ describe('renderList header, groups and pages', () => {
     for (const surface of SURFACES) {
       const ui = await rig.list($, surface, viewOf(listOf(crowd()), 100), handlersFor([]))
       const lines = await linesOf(ui)
-      expect(lines[0]).toBe('30 open · 1 to 25 · page 1 of 2 · @me')
+      expect(lines[0]).toBe('30 open · 1 to 10 · page 1 of 3 · @me')
       const headings = lines.filter((line) => line.startsWith('── '))
       expect(headings.map((line) => line.replace(/^── | ─+/g, ''))).toEqual(['Yours', 'Review requested from you', 'Waiting for review', 'Other open'])
       for (const line of headings) expect(cellWidth(line)).toBe(100)
@@ -200,18 +200,29 @@ describe('renderList header, groups and pages', () => {
     expect(lines.filter((line) => line.startsWith('── ')).map((line) => line.slice(3, 13))).toEqual(['Other open'])
   })
 
-  test('page 1 has next, page 2 has previous, and the text follows', async ($, on) => {
+  test('page 1 has next, the middle page both, the last previous, and the text follows', async ($, on) => {
     const rig = createRig(on)
     const first = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100), handlersFor([]))
     expect(await hotkeysOf(first)).toEqual(['n', 'h', 'r', 'x'])
     expect(await textOf(first)).toContain('n: next')
     expect(await textOf(first)).not.toContain('p: previous')
-    const second = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { page: 1 }), handlersFor([]))
-    const lines = await linesOf(second)
-    expect(lines[0]).toBe('30 open · 26 to 30 · page 2 of 2 · @me')
-    expect(await hotkeysOf(second)).toEqual(['p', 'h', 'r', 'x'])
-    expect(await textOf(second)).toContain('p: previous')
-    expect(await textOf(second)).not.toContain('n: next')
+    const middle = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { page: 1 }), handlersFor([]))
+    expect((await linesOf(middle))[0]).toBe('30 open · 11 to 20 · page 2 of 3 · @me')
+    expect(await hotkeysOf(middle)).toEqual(['n', 'p', 'h', 'r', 'x'])
+    const last = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { page: 2 }), handlersFor([]))
+    const lines = await linesOf(last)
+    expect(lines[0]).toBe('30 open · 21 to 30 · page 3 of 3 · @me')
+    expect(await hotkeysOf(last)).toEqual(['p', 'h', 'r', 'x'])
+    expect(await textOf(last)).toContain('p: previous')
+    expect(await textOf(last)).not.toContain('n: next')
+  })
+
+  test('a page holds 10 pull requests, two lines each', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100), handlersFor([]))
+    const lines = await linesOf(ui)
+    expect(lines.filter((line) => /^ {4}#\d+ ·/.test(line))).toHaveLength(10)
+    expect(lines.filter((line) => line.includes('Change') && !line.includes('#'))).toHaveLength(10)
   })
 
   test('a single page has neither', async ($, on) => {
@@ -223,27 +234,27 @@ describe('renderList header, groups and pages', () => {
   test('a page past the end is clamped', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { page: 9 }), handlersFor([]))
-    expect((await linesOf(ui))[0]).toBe('30 open · 26 to 30 · page 2 of 2 · @me')
+    expect((await linesOf(ui))[0]).toBe('30 open · 21 to 30 · page 3 of 3 · @me')
   })
 
   test('hidden drafts leave the rows and say so', async ($, on) => {
     const rig = createRig(on)
     const all = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100), handlersFor([]))
-    expect(await textOf(all)).toContain('draft #4')
+    expect(await textOf(all)).toContain('draft Change 4')
     expect(await textOf(all)).toContain('h: hide drafts')
     const hidden = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { hideDrafts: true }), handlersFor([]))
     const text = await textOf(hidden)
-    expect(text).not.toContain('draft #')
+    expect(text).not.toContain('draft Change')
     expect(text).not.toContain('#4 ')
     expect(text).toContain('drafts hidden')
     expect(text).toContain('h: show drafts')
-    expect(text).toMatch(/^30 open · 1 to 25 · page 1 of 1 · drafts hidden/)
+    expect(text).toMatch(/^30 open · 1 to 10 · page 1 of 3 · drafts hidden/)
   })
 
   test('says when the repository is larger than the list', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(crowd(), { total: 240, isTruncated: true }), 140), handlersFor([]))
-    expect((await linesOf(ui))[0]).toBe('240 open · 1 to 25 · page 1 of 2 · showing the first 30 · @me')
+    expect((await linesOf(ui))[0]).toBe('240 open · 1 to 10 · page 1 of 3 · showing the first 30 · @me')
   })
 
   test('the header drops the account first when narrow', async ($, on) => {
@@ -257,98 +268,207 @@ describe('renderList header, groups and pages', () => {
 })
 
 describe('renderList rows', () => {
+  const bug = { name: 'bug', color: 'd73a4a' }
+  const payments = { name: 'payments', color: '0e8a16' }
+  const failing = (): ListItem =>
+    item(15, {
+      author: 'oborchers',
+      title: 'fix: rounding in invoice totals',
+      labels: [bug, payments],
+      checks: { passed: 17, failed: 1, pending: 0, total: 18 },
+      reviewDecision: 'review-required',
+      comments: 2,
+      createdAt: '2026-10-12T10:00:00Z',
+    })
   const rich = (): ListItem[] => [
-    item(1035, {
-      author: 'anna',
-      title: 'Fix the parser',
-      labels: [
-        { name: 'bug', color: 'd73a4a' },
-        { name: 'docs', color: 'a2eeef' },
-      ],
-      checks: { passed: 34, failed: 0, pending: 0, total: 35 },
-      reviewDecision: 'approved',
-      comments: 6,
-      createdAt: '2026-10-09T12:00:00Z',
-    }),
-    item(1036, { author: 'ben', title: 'Failing build', checks: { passed: 30, failed: 1, pending: 0, total: 35 }, reviewDecision: 'changes-requested', createdAt: '2026-10-12T11:00:00Z' }),
-    item(1037, { author: 'cy', title: 'Still running', checks: { passed: 30, failed: 0, pending: 3, total: 35 }, reviewDecision: 'review-required', createdAt: '2026-10-12T11:59:30Z' }),
-    item(1038, { author: null, title: 'Ghost', checks: null, createdAt: '2026-10-01T11:59:30Z' }),
+    failing(),
+    item(14, { author: 'oborchers', title: 'feat: add order history page', labels: [{ name: 'frontend', color: '1d76db' }], checks: { passed: 7, failed: 0, pending: 11, queued: 3, total: 18 }, createdAt: '2026-10-12T10:00:00Z' }),
+    item(1, { author: 'oborchers', title: 'feat: add checkout flow', checks: { passed: 18, failed: 0, pending: 0, total: 18 }, reviewDecision: 'approved', createdAt: '2026-10-12T07:00:00Z' }),
   ]
+  const titleLineOf = (lines: string[], title: string): number => lines.findIndex((line) => line.includes(title))
 
-  test('a row has number, title, labels, author, age, checks, review and comments', async ($, on) => {
+  test('a pull request is a title line and a facts line, with the symbol, labels and facts of the owner layout', async ($, on) => {
     const rig = createRig(on)
     for (const surface of SURFACES) {
-      const ui = await rig.list($, surface, viewOf(listOf(rich()), 120), handlersFor([]))
-      const text = await textOf(ui)
-      const row = text.split('\n').find((line) => line.includes('#1035')) ?? ''
-      expect(row).toMatch(/#1035 +Fix the parser +bug +docs +@anna +3 d ago +✓ 34\/35 +approved +💬 6/)
-      expect(text).toContain('✗ 1/35')
-      expect(text).toContain('changes requested')
-      expect(text).toContain('● 3/35')
-      expect(text).toContain('review required')
-      expect(text).toContain('just now')
-      expect(text).toContain('1 h ago')
-      const ghost = text.split('\n').find((line) => line.includes('#1038')) ?? ''
-      expect(ghost).not.toContain('@')
+      const ui = await rig.list($, surface, viewOf(listOf([failing()]), 100), handlersFor([]))
+      const lines = await linesOf(ui)
+      const at = titleLineOf(lines, 'fix: rounding')
+      expect(lines[at]).toBe('  ✗ fix: rounding in invoice totals  bug  payments')
+      expect(lines[at + 1]).toBe('    #15 · @oborchers · opened 2 h ago · 1/18 checks failing · review required · 💬 2')
       await ui.unmount()
     }
   })
 
-  test('label chips carry the GitHub color and a readable text color', async ($, on) => {
+  test('the three pull requests of the owner layout read as in the mock', async ($, on) => {
     const rig = createRig(on)
-    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 120), handlersFor([]))
-    const chips = nodesOf(await ui.drawn()).filter((node) => typeof node.props?.backgroundColor === 'string')
-    const byName = (name: string) => chips.find((node) => node.children?.includes(` ${name} `))
-    expect(byName('bug')?.props).toMatchObject({ backgroundColor: '#d73a4a', color: '#ffffff' })
-    expect(byName('docs')?.props).toMatchObject({ backgroundColor: '#a2eeef', color: '#000000' })
+    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 100), handlersFor([]))
+    const lines = await linesOf(ui)
+    const at = titleLineOf(lines, 'fix: rounding')
+    expect(lines.slice(at, at + 8)).toEqual([
+      '  ✗ fix: rounding in invoice totals  bug  payments',
+      '    #15 · @oborchers · opened 2 h ago · 1/18 checks failing · review required · 💬 2',
+      ' ',
+      '  ● feat: add order history page  frontend',
+      '    #14 · @oborchers · opened 2 h ago · 11/18 checks running',
+      ' ',
+      '  ✓ feat: add checkout flow',
+      '    #1 · @oborchers · opened 5 h ago · 18/18 passing · approved',
+    ])
   })
 
-  test('check and review colors follow the palette', async ($, on) => {
+  test('one blank line between pull requests and before each heading but the first, none after the last of a group', async ($, on) => {
+    const rig = createRig(on)
+    const items = [item(1, { author: 'me', createdAt: '2026-10-03T10:00:00Z' }), item(2, { createdAt: '2026-10-02T10:00:00Z' }), item(3, { createdAt: '2026-10-01T10:00:00Z' })]
+    const ui = await rig.list($, 'terminal', viewOf(listOf(items), 100), handlersFor([]))
+    const lines = await linesOf(ui)
+    const kind = (line: string): string => (line.trim() === '' ? 'blank' : line.startsWith('── ') ? 'heading' : /^ {4}#/.test(line) ? 'meta' : /^ {2,4}\S/.test(line) ? 'title' : 'other')
+    const kinds = lines.map(kind)
+    const start = kinds.indexOf('heading')
+    expect(kinds.slice(start, start + 10)).toEqual(['heading', 'title', 'meta', 'blank', 'heading', 'title', 'meta', 'blank', 'title', 'meta'])
+    expect(kinds[start - 1]).toBe('other')
+  })
+
+  test('the status symbol follows the checks and is the only strongly colored mark of the title line', async ($, on) => {
+    const rig = createRig(on)
+    const states: [string, ListItem['checks'], 'success' | 'failure' | 'pending' | undefined][] = [
+      ['✓', { passed: 4, failed: 0, pending: 0, total: 4 }, 'success'],
+      ['✗', { passed: 2, failed: 1, pending: 1, total: 4 }, 'failure'],
+      ['●', { passed: 2, failed: 0, pending: 2, queued: 1, total: 4 }, 'pending'],
+      ['◷', { passed: 2, failed: 0, pending: 2, queued: 2, total: 4 }, 'pending'],
+      [' ', null, undefined],
+      [' ', { passed: 0, failed: 0, pending: 0, total: 0 }, undefined],
+    ]
+    for (const palette of [PALETTES.claude, PALETTES.github]) {
+      for (const [symbol, checks, color] of states) {
+        const ui = await rig.list($, 'terminal', viewOf(listOf([item(3, { title: 'Same title', checks })]), 100, { palette }), handlersFor([]))
+        const lines = await linesOf(ui)
+        expect(lines.find((line) => line.includes('Same title'))).toBe(`  ${symbol} Same title`)
+        const node = nodesOf(await ui.drawn()).find((candidate) => candidate.children?.length === 1 && candidate.children[0] === symbol && symbol !== ' ')
+        if (color !== undefined) expect(node?.props?.color).toBe(palette[color])
+        await ui.unmount()
+      }
+    }
+  })
+
+  test('the facts line: checks text per state, review text, comments only when there are some, no author when unknown', async ($, on) => {
+    const rig = createRig(on)
+    const metaOf = async (extra: Partial<ListItem>): Promise<string> => {
+      const ui = await rig.list($, 'terminal', viewOf(listOf([item(9, { author: 'anna', createdAt: '2026-10-12T11:59:30Z', ...extra })]), 120), handlersFor([]))
+      const lines = await linesOf(ui)
+      await ui.unmount()
+      return lines.find((line) => line.startsWith('    #9')) ?? ''
+    }
+    expect(await metaOf({})).toBe('    #9 · @anna · opened just now')
+    expect(await metaOf({ checks: { passed: 4, failed: 0, pending: 0, total: 4 } })).toBe('    #9 · @anna · opened just now · 4/4 passing')
+    expect(await metaOf({ checks: { passed: 4, failed: 2, pending: 1, total: 8 } })).toBe('    #9 · @anna · opened just now · 2/8 checks failing')
+    expect(await metaOf({ checks: { passed: 1, failed: 0, pending: 3, queued: 1, total: 4 } })).toBe('    #9 · @anna · opened just now · 3/4 checks running')
+    expect(await metaOf({ checks: { passed: 1, failed: 0, pending: 3, queued: 3, total: 4 } })).toBe('    #9 · @anna · opened just now · 3/4 checks queued')
+    expect(await metaOf({ reviewDecision: 'approved' })).toBe('    #9 · @anna · opened just now · approved')
+    expect(await metaOf({ reviewDecision: 'changes-requested' })).toBe('    #9 · @anna · opened just now · changes requested')
+    expect(await metaOf({ reviewDecision: 'review-required', comments: 1 })).toBe('    #9 · @anna · opened just now · review required · 💬 1')
+    expect(await metaOf({ author: null })).toBe('    #9 · opened just now')
+  })
+
+  test('the facts line is dim; only failing checks and approved are colored', async ($, on) => {
     const rig = createRig(on)
     for (const palette of [PALETTES.claude, PALETTES.github]) {
-      const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 120, { palette }), handlersFor([]))
-      const colorOf = async (text: string) => nodesOf(await ui.drawn()).find((node) => node.children?.includes(text))?.props?.color
-      expect(await colorOf('✓ 34/35')).toBe(palette.success)
-      expect(await colorOf('✗ 1/35')).toBe(palette.failure)
-      expect(await colorOf('● 3/35')).toBe(palette.pending)
-      expect(await colorOf('approved')).toBe(palette.success)
-      expect(await colorOf('changes requested')).toBe(palette.failure)
-      expect(await colorOf('review required')).toBeUndefined()
+      const failingItem = item(9, { checks: { passed: 0, failed: 1, pending: 0, total: 2 }, reviewDecision: 'approved', comments: 3 })
+      const ui = await rig.list($, 'terminal', viewOf(listOf([failingItem]), 120, { palette }), handlersFor([]))
+      const meta = await ui.find({ key: 'pr-9-meta' })
+      const texts = nodesOf(meta).filter((node) => node.type === 'Text' && typeof node.children?.[0] === 'string' && node.children[0].trim() !== '')
+      expect(texts.length).toBeGreaterThan(5)
+      for (const node of texts) {
+        const text = String(node.children?.[0])
+        if (text === '1/2 checks failing') expect(node.props).toMatchObject({ color: palette.failure })
+        else if (text === 'approved') expect(node.props).toMatchObject({ color: palette.success })
+        else {
+          expect(node.props?.dimColor).toBe(true)
+          expect(node.props?.color).toBeUndefined()
+        }
+      }
       await ui.unmount()
     }
   })
 
-  test('the selected pull request gets the marker, the others do not', async ($, on) => {
-    const rig = createRig(on)
-    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 120, { selectedNumber: 1036 }), handlersFor([]))
-    const lines = await linesOf(ui)
-    const marked = lines.filter((line) => line.startsWith('▸'))
-    expect(marked).toHaveLength(1)
-    expect(marked[0]).toContain('#1036')
-    expect(lines.filter((line) => line.includes('#103') && !line.startsWith('▸'))).toHaveLength(3)
-    expect(await textOf(ui)).toContain('b: back to branch PR')
-    const none = await rig.list($, 'terminal', viewOf(listOf(rich()), 120), handlersFor([]))
-    expect(await textOf(none)).not.toContain('▸')
-    expect(await textOf(none)).not.toContain('back to branch PR')
-  })
-
-  test('drafts carry a dim prefix and the whole row is dim', async ($, on) => {
+  test('the title is bold, a draft has a dim prefix and a dim title', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf([item(7, { isDraft: true, title: 'wip' }), item(8, { title: 'ready' })]), 100), handlersFor([]))
     const lines = await linesOf(ui)
-    expect(lines.find((line) => line.includes('#7'))).toContain('draft #7')
-    expect(lines.find((line) => line.includes('#8'))).not.toContain('draft')
-    const button = await ui.find({ key: 'pr-7' })
-    expect(button?.props.dimColor).toBe(true)
+    expect(lines.find((line) => line.includes('wip'))).toBe('    draft wip')
+    expect(lines.find((line) => line.includes('ready'))).toBe('    ready')
+    const draftTitle = await ui.find({ key: 'pr-7' })
+    const text = (button: unknown, content: string) => nodesOf(button).find((node) => node.type === 'Text' && node.children?.[0] === content)
+    expect(text(draftTitle, 'draft ')?.props?.dimColor).toBe(true)
+    expect(text(draftTitle, 'wip')?.props).toMatchObject({ bold: true, dimColor: true })
     const ready = await ui.find({ key: 'pr-8' })
-    expect(ready?.props.dimColor).toBeUndefined()
+    expect(text(ready, 'ready')?.props).toMatchObject({ bold: true })
+    expect(text(ready, 'ready')?.props?.dimColor).toBeUndefined()
+  })
+
+  test('labels are plain names, two spaces apart, in the GitHub color muted toward grey, the same in both palettes', async ($, on) => {
+    const rig = createRig(on)
+    for (const palette of [PALETTES.claude, PALETTES.github]) {
+      const ui = await rig.list($, 'terminal', viewOf(listOf([failing()]), 100, { palette }), handlersFor([]))
+      const nodes = nodesOf(await ui.drawn())
+      const byName = (name: string) => nodes.find((node) => node.type === 'Text' && node.children?.[0] === name)
+      expect(byName('bug')?.props?.color).toBe(mutedLabelColor('d73a4a'))
+      expect(byName('payments')?.props?.color).toBe(mutedLabelColor('0e8a16'))
+      expect(byName('bug')?.props?.color).toBe('#c25e6e')
+      expect(nodes.some((node) => node.props?.backgroundColor !== undefined)).toBe(false)
+      expect((await linesOf(ui)).find((line) => line.includes('bug'))).toMatch(/totals {2}bug {2}payments$/)
+      await ui.unmount()
+    }
+  })
+
+  test('labels that do not fit are dropped from the end and counted as +N, after the title shrank to its floor', async ($, on) => {
+    const rig = createRig(on)
+    const many = ['aaaaaaaa', 'bbbbbbbb', 'cccccccc', 'dddddddd'].map((name) => ({ name, color: '1d76db' }))
+    const at = async (title: string, labels: { name: string; color: string }[], columns: number): Promise<string> => {
+      const ui = await rig.list($, 'terminal', viewOf(listOf([item(2, { title, labels })]), columns), handlersFor([]))
+      const lines = await linesOf(ui)
+      for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(columns)
+      await ui.unmount()
+      return lines.find((line) => line.startsWith('  ') && !line.startsWith('    #') && line.trim() !== '' && !line.startsWith('──')) ?? ''
+    }
+    expect(await at('Add feature', many, 80)).toBe('    Add feature  aaaaaaaa  bbbbbbbb  cccccccc  dddddddd')
+    expect(await at('Add feature', many, 40)).toBe('    Add feature  aaaaaaaa  bbbbbbbb  +2')
+    expect(await at('Add feature', many, 33)).toBe('    Add feature  aaaaaaaa  +3')
+    // The title is cut first (down to 24 cells) before a label goes.
+    const long = 'A title that keeps going and going and going'
+    const cut = await at(long, [bug], 40)
+    expect(cut).toBe('    A title that keeps going and g…  bug')
+    // Nothing of the labels fits beside a 24-cell title: only the count.
+    const onlyCount = await at(long, [{ name: 'x'.repeat(30), color: 'ffffff' }, bug], 40)
+    expect(onlyCount).toMatch(/^ {4}A title that keeps going.*…  \+2$/)
+    // Not even the count fits: the title takes the room.
+    expect(cellWidth(await at(long, many, 30))).toBeLessThanOrEqual(30)
+  })
+
+  test('the selected pull request gets the marker before its symbol and every other row is indented to line up', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 100, { selectedNumber: 14 }), handlersFor([]))
+    const lines = await linesOf(ui)
+    const marked = lines.filter((line) => line.startsWith('▸'))
+    expect(marked).toEqual(['▸ ● feat: add order history page  frontend'])
+    // Marker, symbol, title: the symbol and the title start in the same cells on every title line.
+    const failingLine = lines.find((line) => line.includes('fix: rounding')) ?? ''
+    expect(failingLine.indexOf('✗')).toBe((marked[0] ?? '').indexOf('●'))
+    expect(failingLine.indexOf('fix:')).toBe((marked[0] ?? '').indexOf('feat:'))
+    // The facts line is indented the same on selected and unselected rows.
+    const metas = lines.filter((line) => /^ {4}#\d+/.test(line))
+    expect(metas).toHaveLength(3)
+    expect(lines.filter((line) => line.includes('#') && line.startsWith('▸'))).toHaveLength(0)
+    expect(await textOf(ui)).toContain('b: back to branch PR')
+    const none = await rig.list($, 'terminal', viewOf(listOf(rich()), 100), handlersFor([]))
+    expect(await textOf(none)).not.toContain('▸')
+    expect(await textOf(none)).not.toContain('back to branch PR')
   })
 
   test('long titles are cut with an ellipsis', async ($, on) => {
     const rig = createRig(on)
     const title = 'A very long pull request title that never ends and keeps going on and on'
     const ui = await rig.list($, 'terminal', viewOf(listOf([item(1, { title })]), 40), handlersFor([]))
-    const row = (await linesOf(ui)).find((line) => line.includes('#1')) ?? ''
+    const row = (await linesOf(ui)).find((line) => line.includes('A very long')) ?? ''
     expect(row).toContain('…')
     expect(cellWidth(row)).toBeLessThanOrEqual(40)
   })
@@ -371,9 +491,9 @@ describe('renderList fits the width', () => {
     )
   }
 
-  test('no line is wider than the columns at 40, 80, 120 and 160', async ($, on) => {
+  test('no line is wider than the columns at 20, 40, 80, 120 and 160', async ($, on) => {
     const rig = createRig(on)
-    for (const columns of [40, 80, 120, 160]) {
+    for (const columns of [20, 40, 80, 120, 160]) {
       for (const surface of SURFACES) {
         const ui = await rig.list($, surface, viewOf(listOf([...heavy(), ...crowd()]), columns, { selectedNumber: 5001 }), handlersFor([]))
         for (const line of await linesOf(ui)) expect(cellWidth(line)).toBeLessThanOrEqual(columns)
@@ -382,34 +502,23 @@ describe('renderList fits the width', () => {
     }
   })
 
-  test('drops comments, review, age, author and labels in that order, then cuts the title', async ($, on) => {
+  test('the facts line is cut at its end, the start stays', async ($, on) => {
     const rig = createRig(on)
-    const order = ['💬', 'approved', 'd ago', '@anna', ' bug ']
-    const one = item(5000, { title: 'Twenty-four chars title', author: 'anna', labels: [{ name: 'bug', color: 'd73a4a' }], checks: { passed: 3, failed: 0, pending: 0, total: 3 }, reviewDecision: 'approved', comments: 3, createdAt: '2025-01-01T10:00:00Z' })
-    const seen: string[][] = []
-    for (const columns of [200, 90, 82, 74, 68, 56, 50, 44, 38]) {
-      const ui = await rig.list($, 'terminal', viewOf(listOf([one]), columns), handlersFor([]))
-      const row = (await linesOf(ui)).find((line) => line.includes('#5000')) ?? ''
-      expect(cellWidth(row)).toBeLessThanOrEqual(columns)
-      seen.push(order.filter((part) => row.includes(part)))
-      await ui.unmount()
-    }
-    expect(seen[0]).toHaveLength(5)
-    expect(seen.at(-1)).toHaveLength(0)
-    // Narrower keeps a subset of what wider keeps.
-    for (let index = 1; index < seen.length; index += 1) for (const part of seen[index] ?? []) expect(seen[index - 1]).toContain(part)
-    // Labels outlast author, author outlasts age, age outlasts review, review outlasts comments.
-    const lastWidth = (part: string) => seen.reduce((last, kept, index) => (kept.includes(part) ? index : last), -1)
-    for (let index = 1; index < order.length; index += 1) {
-      expect(lastWidth(order[index] as string)).toBeGreaterThanOrEqual(lastWidth(order[index - 1] as string))
-    }
+    const ui = await rig.list($, 'terminal', viewOf(listOf(heavy()), 50), handlersFor([]))
+    const meta = (await linesOf(ui)).find((line) => line.includes('#5001')) ?? ''
+    expect(meta.startsWith('    #5001 · @a-rather-long-author-login')).toBe(true)
+    expect(meta.endsWith('…')).toBe(true)
+    expect(cellWidth(meta)).toBeLessThanOrEqual(50)
+    const wide = await rig.list($, 'terminal', viewOf(listOf(heavy()), 160), handlersFor([]))
+    expect((await linesOf(wide)).find((line) => line.includes('#5001')) ?? '').toBe(`    #5001 · @a-rather-long-author-login · opened ${relativeTime('2025-01-01T10:00:00Z', NOW)} · 1/123 checks failing · changes requested · 💬 1234`)
   })
 
-  test('keeps the title long enough to read at 80 columns', async ($, on) => {
+  test('keeps the title long enough to read at 80 columns, labels cut to +N', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(heavy()), 80), handlersFor([]))
-    const row = (await linesOf(ui)).find((line) => line.includes('#5001')) ?? ''
-    expect(row).toContain('An extremely long')
+    const row = (await linesOf(ui)).find((line) => line.includes('An extremely long') && !line.includes('draft')) ?? ''
+    expect(row).toContain('An extremely long title')
+    expect(row).toMatch(/\+\d$/)
   })
 
   test('footer buttons wrap into several lines instead of overflowing', async ($, on) => {
@@ -443,11 +552,27 @@ describe('renderList presses', () => {
     }
   })
 
-  test('every row is its own plain button keyed by number', async ($, on) => {
+  test('pressing either line of a pull request selects it', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const ui = await rig.list($, surface, viewOf(listOf(crowd()), 120), handlersFor(calls))
+      await ui.press({ key: 'pr-5' })
+      await ui.press({ key: 'pr-5-meta' })
+      await ui.press({ key: 'pr-6-meta' })
+      expect(calls).toEqual(['select 5', 'select 5', 'select 6'])
+      await ui.unmount()
+    }
+  })
+
+  test('every pull request has two plain buttons, the title line keyed pr-N and the facts line pr-N-meta', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 120), handlersFor([]))
-    const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('pr-'))
-    expect(keys).toHaveLength(25)
-    expect(new Set(keys).size).toBe(25)
+    const buttons = await ui.findAll({ type: 'Button' })
+    const keys = buttons.map((button) => String(button.key)).filter((key) => key.startsWith('pr-'))
+    expect(keys.filter((key) => /^pr-\d+$/.test(key))).toHaveLength(10)
+    expect(keys.filter((key) => /^pr-\d+-meta$/.test(key))).toHaveLength(10)
+    expect(new Set(keys).size).toBe(20)
+    for (const button of buttons.filter((candidate) => String(candidate.key).startsWith('pr-'))) expect(button.props.plain).toBe(true)
   })
 })

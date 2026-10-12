@@ -302,6 +302,8 @@ export type ListChecks = {
   passed: number;
   failed: number;
   pending: number;
+  /** Of `pending`, the checks that wait to start (queued, waiting, requested, expected); absent counts as none. */
+  queued?: number;
   total: number;
 };
 
