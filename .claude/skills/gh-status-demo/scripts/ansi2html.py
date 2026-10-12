@@ -19,6 +19,7 @@ that element with a transparent background. Colors are TokyoNight-like.
 import argparse
 import glob
 import html
+import unicodedata
 import os
 import re
 import shutil
@@ -172,8 +173,21 @@ def render(rows, r0, r1, c0, c1):
     return '\n'.join(out)
 
 
+def cells(text):
+    # Glyphs outside ASCII may come from a fallback font with another advance width;
+    # pin each to its terminal cell width so the columns stay aligned.
+    out = []
+    for ch in text:
+        if ord(ch) < 0x80:
+            out.append(html.escape(ch))
+            continue
+        width = 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
+        out.append('<span class="g%d">%s</span>' % (width, html.escape(ch)))
+    return ''.join(out)
+
+
 def span(text, css):
-    text = html.escape(text)
+    text = cells(text)
     return '<span style="%s">%s</span>' % (css, text) if css else text
 
 
@@ -221,6 +235,7 @@ html,body{{margin:0;background:transparent}}
 .win{{display:inline-block;margin:24px;border-radius:10px;background:{BG_DEFAULT};box-shadow:0 10px 40px rgba(0,0,0,.5);overflow:hidden}}
 .bar{{height:28px;background:#2a2b36;display:flex;align-items:center;padding-left:12px;gap:8px}}
 .dot{{width:12px;height:12px;border-radius:6px}}
+.g1{{display:inline-block;width:1ch;text-align:center;overflow:hidden;vertical-align:top}}.g2{{display:inline-block;width:2ch;text-align:center;overflow:hidden;vertical-align:top}}
 pre{{margin:0;padding:14px 18px;color:{FG_DEFAULT};font:15px/1.25 {stack};white-space:pre}}
 </style></head><body><div class="win"><div class="bar"><div class="dot" style="background:#ff5f57"></div><div class="dot" style="background:#febc2e"></div><div class="dot" style="background:#28c840"></div></div><pre>{body}</pre></div></body></html>'''
     open(args.dst, 'w', encoding='utf-8').write(page)
