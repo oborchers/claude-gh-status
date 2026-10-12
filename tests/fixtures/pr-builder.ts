@@ -28,6 +28,7 @@ export function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
     url: 'https://github.com/acme/app/pull/42',
     isPrivate: false,
     isDraft: false,
+    author: 'octocat',
     headRefName: 'feat/things',
     headOid: 'abcdef0123456789abcdef0123456789abcdef01',
     baseRefName: 'main',

@@ -30,6 +30,12 @@ If the demo workflow is not on `main` yet, base the branch and the pull request 
 
 Use the account that owns the repository. If `gh` is logged in with several accounts, run the `gh` commands with `GH_TOKEN=$(gh auth token -u <owner-login>)` instead of switching the global account.
 
+### Demo pull requests for the list
+
+The list needs several pull requests. Create a few more branches the same way, all named `demo/*`, each with its own file under `demo/` and its own pull request, and make one of them a draft (`gh pr create --draft`). Add labels (create them with `gh label create`, then `gh pr edit <n> --add-label <name>`) so the label colors show.
+
+The demo pipeline fails only on `demo/checkout-flow` and `demo/invoice-rounding`; all other `demo/*` branches pass. That gives passing, running and failing rows in one list. Shortly before the screenshot, push an empty commit to one passing branch (`git commit --allow-empty -m "chore: rerun" && git push`) so that its row shows as running.
+
 ## 2. Add a comment and an unresolved thread
 
 Comments are posted as the person. Show them the exact texts first and post only after they approve. Suggested texts:
@@ -68,7 +74,7 @@ herdr pane layout --pane <p>                                     # check the siz
 herdr pane resize --direction down --amount 0.1 --pane <p>       # adjust
 ```
 
-Read the session with `herdr pane read <p> --source visible` to confirm the state before asking for a screenshot. Herdr cannot take images; the person takes the screenshots.
+Read the session with `herdr pane read <p> --source visible` to confirm the state before taking a screenshot (method below).
 
 ## 5. Take the screenshots
 
@@ -79,11 +85,13 @@ Timing after the push (the demo jobs sleep):
 - 2:30 to 5:00: E2E jobs run with their steps while the integration job is red. Best moment for the full picture.
 - after about 5:30: everything settled, pipeline failed.
 
-Take three views:
+Take five views:
 
 1. Tab view: terminal about 147x41 cells, `/pr` docked on the right, band above the prompt.
 2. Compact view: terminal about 100 columns, `/pr` inline above the prompt.
 3. Band: a single-row crop of the band.
+4. List view (`docs/images/list-view.png`): `/pr list`, with the demo pull requests above, a draft among them and labels set. Crop to the pane and its filled rows.
+5. Selected view (`docs/images/selected-view.png`): pick a row in the list; the pane shows `(selected)` and `b: back`. Crop to the pane.
 
 Method (herdr, headless Playwright, no OS screenshots):
 
@@ -92,6 +100,7 @@ herdr pane read <p> --source visible --format ansi > x.ansi
 python3 scripts/ansi2html.py --font-dir <font-folder> --font-family "<Font Name>" x.ansi shot.html <first_row> <last_row>
 ```
 
+- Size for the README: GitHub shows README images at most about 880 px wide, so a capture wider than about 100 columns shrinks the text until it is hard to read. Views that are only about the pane (list, selected) are cropped to the pane with a column range (`<first_row> <last_row> <first_col> <last_col>`, starting one column right of the pane border) and to the rows that hold content, about 80 columns. Whole-session views (tab view) stay near 147 columns. In the README, give pane crops `width="750"` so they show at their natural size; session views get `width="100%"`.
 - Pick the row range so it excludes the status line below the prompt (session id, usage). Check the rows with `sed -n` on the capture. For the band, use the single band row.
 - Use the person's own terminal font: read it from their terminal config (for Ghostty, `font-family` in its config) and find the Regular and Bold `.ttf` files. The script copies them next to the HTML and loads them with `@font-face`.
 - Render with the headless Playwright MCP at `deviceScaleFactor` 2 (page viewport wide enough for the window) and screenshot the `.win` element with `omitBackground`, so the rounded corners stay transparent.

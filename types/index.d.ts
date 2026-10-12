@@ -140,6 +140,8 @@ export type PullRequest = {
   /** The repository is private: a browser signed in as another account sees a 404. */
   isPrivate: boolean;
   isDraft: boolean;
+  /** Login of the author; null for a deleted account. */
+  author: string | null;
   /** Login of whoever merged it; set once merged. */
   mergedBy?: string | null;
   mergedAt?: string | null;
@@ -287,7 +289,59 @@ export type PendingAction =
   | (PendingBase & { kind: 'enqueue'; headOid: string })
   | (PendingBase & { kind: 'dequeue' })
   | (PendingBase & { kind: 'auto-merge-on'; headOid: string; method: MergeMethod })
-  | (PendingBase & { kind: 'auto-merge-off' });
+  | (PendingBase & { kind: 'auto-merge-off' })
+  | (PendingBase & { kind: 'approve'; headOid: string; body: string })
+  | (PendingBase & { kind: 'request-changes'; headOid: string; body: string })
+  | (PendingBase & { kind: 'ready-for-review'; headOid: string });
+
+/** Which list group a pull request falls in, in display order. */
+export type ListGroup = 'yours' | 'requested' | 'waiting' | 'other';
+
+/** Pipeline counts of one pull request's head commit. */
+export type ListChecks = {
+  passed: number;
+  failed: number;
+  pending: number;
+  /** Of `pending`, the checks that wait to start (queued, waiting, requested, expected); absent counts as none. */
+  queued?: number;
+  total: number;
+};
+
+/** One open pull request in the repository list. */
+export type ListItem = {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  /** Author login; null for a deleted account. */
+  author: string | null;
+  createdAt: string;
+  /** Label name and its GitHub hex color without '#'. */
+  labels: { name: string; color: string }[];
+  reviewDecision: ReviewDecision;
+  /** Review requested from the viewer, directly or through a team (from a `review-requested:@me` search). */
+  requestedFromViewer: boolean;
+  /** Review requested from someone other than the viewer. */
+  hasOtherRequests: boolean;
+  checks: ListChecks | null;
+  comments: number;
+};
+
+/** The repository's open pull requests, as one list refresh saw them. */
+export type PrList =
+  | { kind: 'loading'; at: string }
+  | { kind: 'list'; at: string; location: RepoLocation; account: AccountChoice; items: ListItem[]; total: number; isTruncated: boolean; problem?: Problem | null }
+  | { kind: 'error'; at: string; message: string; problem?: Problem };
+
+/** Counts for the band when the branch has no pull request. */
+export type ListCounts = {
+  /** All open pull requests of the repository. */
+  open: number;
+  yours: number;
+  requested: number;
+  at: string;
+};
 
 export type ActionOutcome = {
   kind: PendingAction['kind'];
@@ -315,6 +369,18 @@ declare module 'claude-code' {
       pending: PendingAction | null;
       /** Result of the last write action, shown in the pane. */
       outcome: ActionOutcome | null;
+      /** Open pull requests of the repository, while the list pane is open. */
+      list: PrList | null;
+      /** Zero-based page of the list (25 per page). */
+      listPage: number;
+      /** Hide drafts in the list. */
+      listHideDrafts: boolean;
+      /** A pull request picked from the list; the detail pane shows it instead of the branch's. */
+      selected: { number: number; repo: string } | null;
+      /** Snapshot of the selected pull request; the band keeps showing `snapshot`. */
+      selectedSnapshot: Snapshot | null;
+      /** Yours and review-requested counts for the band. */
+      counts: ListCounts | null;
     };
   }
 }

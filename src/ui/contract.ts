@@ -3,7 +3,7 @@
 
 import type { Elements } from 'claude-code'
 
-import type { ActionOutcome, JobDetail, MergeMethod, PendingAction, Snapshot, Status } from '../model'
+import type { ActionOutcome, JobDetail, ListCounts, MergeMethod, PendingAction, PrList, Snapshot, Status } from '../model'
 import type { Palette } from './colors'
 
 /** The element tables of the surfaces gh-status draws on. */
@@ -14,6 +14,8 @@ export type View = {
   snapshot: Snapshot
   /** Derived status; null unless snapshot.kind is 'pr'. */
   status: Status | null
+  /** True while the pane shows a pull request picked from the list instead of the branch's; the band never sets it. */
+  isSelected?: boolean
   /** Live job details; empty unless the pane is open and checks run. */
   jobs: JobDetail[]
   /** Epoch ms of this draw, for relative times and running durations. */
@@ -28,6 +30,38 @@ export type View = {
   outcome: ActionOutcome | null
   /** The write action waiting for a confirm press; the band and the pane's Merge section both show its controls while set. */
   pending: PendingAction | null
+  /** True while any confirmation waits, even one drawn only in the other site (the band's while the pane shows a pick). The pane then keeps `b` free. */
+  hasPending?: boolean
+  /** Open, yours and review-requested counts for the band; null until fetched. */
+  counts?: ListCounts | null
+}
+
+/** What the list pane draws from. */
+export type ListView = {
+  list: PrList | null
+  /** Zero-based page. */
+  page: number
+  hideDrafts: boolean
+  /** The pull request the detail pane shows, to mark its row; null for the branch's. */
+  selectedNumber: number | null
+  counts: ListCounts | null
+  nowMs: number
+  columns: number
+  surface?: 'terminal' | 'desktop'
+  palette: Palette
+}
+
+/** Handlers the list pane calls. */
+export type ListHandlers = {
+  selectPr(number: number): void
+  nextPage(): void
+  prevPage(): void
+  toggleDrafts(): void
+  refresh(): void
+  /** Back to the branch's pull request in the detail pane. */
+  back(): void
+  closeList(): void
+  openUrl(url: string): void
 }
 
 /** Handlers the band and pane call. Optional ones are absent until their wave lands. */
@@ -49,13 +83,27 @@ export type Handlers = {
   requestDequeue?(): void
   requestAutoMerge?(): void
   requestAdminMerge?(): void
+  /** Review actions for the shown pull request: approve, request changes, take a draft out of draft. Each only sets the confirmation. */
+  requestApprove?(): void
+  requestChanges?(): void
+  requestReady?(): void
+  /** The review field's text, kept in the pending review's body (the one source of truth); it is posted only by the confirm press, never by Enter. */
+  setReviewBody?(text: string): void
   /**
    * The confirm press. `isSecondStep` is the admin step the pressed button was
    * drawn for; a press from another step than the live one is ignored, so a
    * double press of the first step's key never reaches the final confirmation.
+   * `drawnBody` is the review text the button was drawn with: a review whose
+   * current text differs is refused, never posted.
    */
-  confirmPending(isSecondStep?: boolean): void
+  confirmPending(isSecondStep?: boolean, drawnBody?: string): void
   /** The cancel key: clears the pending action, no write. */
   cancelPending(): void
   selectMethod(method: MergeMethod): void
+  /** Shows this pull request of the repository in the pane (the list's rows call it). */
+  selectPr?(number: number): void
+  /** Leaves the selected pull request: the pane shows the branch's again. */
+  back?(): void
+  /** Opens the list pane of open pull requests. */
+  openList?(): void
 }

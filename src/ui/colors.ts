@@ -59,6 +59,22 @@ export function tone(palette: Palette, value: Tone | undefined): string | undefi
   return value === undefined ? undefined : palette[value]
 }
 
+/** The neutral grey a label color is mixed toward, so it reads on dark and light terminals. */
+const LABEL_NEUTRAL = [0x9a, 0xa0, 0xb0] as const
+
+/** Share of the neutral grey in a label color. */
+const LABEL_MIX = 0.35
+
+/** A GitHub label hex (six digits, no `#`) mixed 35% toward #9aa0b0, as `#rrggbb`; the neutral itself for anything that is not six hex digits. */
+export function mutedLabelColor(hex: string): string {
+  const isHex = hex.length === 6 && !/[^0-9a-fA-F]/.test(hex)
+  const mixed = LABEL_NEUTRAL.map((neutral, index) => {
+    const own = isHex ? parseInt(hex.slice(index * 2, index * 2 + 2), 16) : neutral
+    return Math.round(own * (1 - LABEL_MIX) + neutral * LABEL_MIX)
+  })
+  return `#${mixed.map((value) => value.toString(16).padStart(2, '0')).join('')}`
+}
+
 /** The badge background for a badge word. */
 export function badgeBackground(palette: Palette, text: 'open' | 'draft' | 'merged' | 'closed' | 'queued'): string {
   switch (text) {

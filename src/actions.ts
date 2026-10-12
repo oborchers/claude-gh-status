@@ -19,6 +19,7 @@ export const HEAD_CHANGED = 'new commits since you asked to confirm, review agai
 export const RULES_CHANGED = 'rules changed, review again'
 export const RECHECK_FAILED = 'could not re-check the pull request, nothing was done'
 export const CANCELLED = 'the dialog was closed, nothing was done'
+export const CHANGES_NEED_TEXT = 'write what should change first'
 
 /** Presses this soon after the dialog (or its admin step) opened are stray keystrokes. */
 export const MIN_DIALOG_MS = 600
@@ -31,7 +32,10 @@ const METHOD_ENUM: Record<MergeMethod, string> = { merge: 'MERGE', squash: 'SQUA
 // Input field names verified against GitHub's schema by introspection:
 // EnqueuePullRequestInput { pullRequestId, expectedHeadOid, jump },
 // DequeuePullRequestInput { id }, EnablePullRequestAutoMergeInput { pullRequestId,
-// mergeMethod, expectedHeadOid, ... }, DisablePullRequestAutoMergeInput { pullRequestId }.
+// mergeMethod, expectedHeadOid, ... }, DisablePullRequestAutoMergeInput { pullRequestId },
+// AddPullRequestReviewInput { pullRequestId!, commitOID, body, event, comments, threads }
+// with event one of COMMENT, APPROVE, REQUEST_CHANGES, DISMISS,
+// MarkPullRequestReadyForReviewInput { pullRequestId }.
 export const ENQUEUE_MUTATION =
   'mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid}) { mergeQueueEntry { position } } }'
 export const DEQUEUE_MUTATION = 'mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { mergeQueueEntry { position } } }'
@@ -39,6 +43,11 @@ export const AUTO_MERGE_ON_MUTATION =
   'mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!, $expectedHeadOid: GitObjectID!) { enablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId, mergeMethod: $mergeMethod, expectedHeadOid: $expectedHeadOid}) { pullRequest { number } } }'
 export const AUTO_MERGE_OFF_MUTATION =
   'mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { number } } }'
+
+export const REVIEW_MUTATION =
+  'mutation($pullRequestId: ID!, $commitOID: GitObjectID!, $event: PullRequestReviewEvent!, $body: String!) { addPullRequestReview(input: {pullRequestId: $pullRequestId, commitOID: $commitOID, event: $event, body: $body}) { pullRequestReview { state } } }'
+export const READY_MUTATION =
+  'mutation($pullRequestId: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { number } } }'
 
 const OID_PATTERN = /^[0-9a-f]{40}$/
 const SLUG_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
@@ -114,10 +123,44 @@ export function rerunArgs(runId: number, location: RepoLocation): string[] {
   return ['run', 'rerun', String(runId), '--failed', '-R', slug]
 }
 
+const REVIEW_EVENT = { approve: 'APPROVE', 'request-changes': 'REQUEST_CHANGES' } as const
+
+/** The text a review posts: an approval's blank comment is empty, anything else goes as typed. */
+export const reviewText = (kind: 'approve' | 'request-changes', body: string): string => (kind === 'approve' && body.trim() === '' ? '' : clampReviewText(body))
+
+/** Longest review text kept (GitHub's own limit is 65536). */
+export const MAX_REVIEW_CHARS = 65_000
+
+/** The text cut to MAX_REVIEW_CHARS, never between the two halves of a surrogate pair. */
+export function clampReviewText(text: string): string {
+  if (text.length <= MAX_REVIEW_CHARS) return text
+  const last = text.charCodeAt(MAX_REVIEW_CHARS - 1)
+  const isHighHalf = last >= 0xd800 && last <= 0xdbff
+  return text.slice(0, isHighHalf ? MAX_REVIEW_CHARS - 1 : MAX_REVIEW_CHARS)
+}
+
+/** Shown when the text of the confirmation changed between its drawing and the press. */
+export const TEXT_CHANGED = 'text changed, check it and press y again'
+
+/** True for a request for changes without any text to say what should change. */
+export const isReviewTextMissing = (pending: PendingAction): boolean => pending.kind === 'request-changes' && pending.body.trim() === ''
+
+/** `addPullRequestReview` arguments, bound to the head commit the person saw (`commitOID`). */
+export const reviewArgs = (prId: string, kind: 'approve' | 'request-changes', headOid: string, body: string): string[] =>
+  graphqlArgs(REVIEW_MUTATION, [['pullRequestId', prId], ['commitOID', requireOid(headOid)], ['event', REVIEW_EVENT[kind]], ['body', reviewText(kind, body)]])
+
+export const readyArgs = (prId: string): string[] => graphqlArgs(READY_MUTATION, [['pullRequestId', prId]])
+
 export const autoMergeOffArgs = (prId: string): string[] => graphqlArgs(AUTO_MERGE_OFF_MUTATION, [['pullRequestId', prId]])
 
-/** The write actions the person may start for this pull request, in display order. */
-export function availableActions(pr: PullRequest): ActionKind[] {
+const sameLogin = (a: string | null, b: string): boolean => a !== null && b !== '' && a.toLowerCase() === b.toLowerCase()
+
+/**
+ * The write actions the person may start for this pull request, in display order.
+ * `viewerLogin` is the account that would act: reviews are for other people's
+ * open, non-draft pull requests, ready-for-review for the viewer's own drafts.
+ */
+export function availableActions(pr: PullRequest, viewerLogin = ''): ActionKind[] {
   if (pr.state !== 'open') return []
   // Every write binds the head commit; without a valid one nothing is offered.
   if (!isValidOid(pr.headOid)) return []
@@ -132,6 +175,8 @@ export function availableActions(pr: PullRequest): ActionKind[] {
   if (pr.autoMerge !== null && !pr.isInMergeQueue) actions.push('auto-merge-off')
   const needsBypass = !isMergeable || pr.isMergeQueueEnabled
   if (pr.viewerCanMergeAsAdmin && hasMethod && needsBypass && !pr.isDraft && !pr.isInMergeQueue) actions.push('admin-merge')
+  if (!pr.isDraft && pr.author !== null && viewerLogin !== '' && !sameLogin(pr.author, viewerLogin)) actions.push('approve', 'request-changes')
+  if (pr.isDraft && sameLogin(pr.author, viewerLogin)) actions.push('ready-for-review')
   return actions
 }
 
@@ -191,12 +236,12 @@ export function bypassedRules(pr: PullRequest): Blocker[] {
  * The dialog's pending action for `kind`, or null when this pull request does
  * not offer it. `method` is validated against what the repository allows.
  */
-export function buildPending(kind: ActionKind, snapshot: Snapshot, method?: MergeMethod, openedAt = 0): PendingAction | null {
+export function buildPending(kind: ActionKind, snapshot: Snapshot, method?: MergeMethod, openedAt = 0, body = ''): PendingAction | null {
   if (snapshot.kind !== 'pr') return null
   const { pr, account, location } = snapshot
   const repo = repoSlug(location)
   if (repo === null || !SLUG_PATTERN.test(repo)) return null
-  if (!availableActions(pr).includes(kind)) return null
+  if (!availableActions(pr, account.login).includes(kind)) return null
   const chosen = method ?? defaultMethod(pr.allowedMethods)
   if (chosen !== null && !pr.allowedMethods.includes(chosen)) return null
   const base = { prNumber: pr.number, repo: repo.toLowerCase(), prId: pr.id, baseRefName: pr.baseRefName, login: account.login, openedAt }
@@ -214,6 +259,11 @@ export function buildPending(kind: ActionKind, snapshot: Snapshot, method?: Merg
       return chosen === null ? null : { ...base, kind, headOid, method: chosen }
     case 'auto-merge-off':
       return { ...base, kind }
+    case 'approve':
+    case 'request-changes':
+      return { ...base, kind, headOid, body }
+    case 'ready-for-review':
+      return { ...base, kind, headOid }
   }
 }
 
@@ -265,11 +315,33 @@ function successMessage(pending: PendingAction): string {
       return `auto-merge enabled for PR #${pending.prNumber}`
     case 'auto-merge-off':
       return `auto-merge disabled for PR #${pending.prNumber}`
+    case 'approve':
+      return `PR #${pending.prNumber} approved`
+    case 'request-changes':
+      return `changes requested on PR #${pending.prNumber}`
+    case 'ready-for-review':
+      return `PR #${pending.prNumber} is ready for review`
   }
 }
 
+/**
+ * True when GitHub clearly said no: a GraphQL `errors` body that is not a server fault, or an HTTP 4xx
+ * (408 is a timeout, not a refusal). A run that never started (no gh, no token) wrote nothing either.
+ */
+function isClearRefusal(ran: Extract<GhResult, { isOk: false }>): boolean {
+  if (ran.kind === 'gh-missing') return true
+  if (ran.kind === 'auth' && ran.exitCode === null) return true
+  if (ran.kind === 'server' || ran.kind === 'network' || ran.kind === 'timeout') return false
+  if (graphqlFailure(ran.stdout) !== null) return true
+  return /\bhttp 4(?!08)\d\d\b/i.test(ran.message)
+}
+
 /** True when a failed run may still have reached GitHub: no clear refusal came back. */
-function isResultUnknown(ran: Extract<GhResult, { isOk: false }>): boolean {
+function isResultUnknown(kind: ActionKind, ran: Extract<GhResult, { isOk: false }>): boolean {
+  if (kind === 'approve' || kind === 'request-changes' || kind === 'ready-for-review') {
+    // Reviews and ready-for-review cannot be taken back or repeated safely: only a clear refusal is known.
+    return !isClearRefusal(ran)
+  }
   if (ran.kind === 'timeout' || ran.kind === 'network' || ran.kind === 'server') return true
   return ran.kind === 'failed' && ran.exitCode === null
 }
@@ -292,16 +364,17 @@ export async function execute(
 ): Promise<ActionOutcome> {
   const refuse = (message: string, isUnknown = false): ActionOutcome => ({ kind: pending.kind, isOk: false, message, at, ...(isUnknown ? { isUnknown } : {}) })
   if ('headOid' in pending && !isValidOid(pending.headOid)) return refuse('no valid head commit to bind the write to, review again')
+  if (isReviewTextMissing(pending)) return refuse(CHANGES_NEED_TEXT)
   if (latest === null || latest.kind !== 'pr') return refuse('no pull request to act on, review again')
   const { pr, location, account } = latest
   const slug = repoSlug(location)
   if (slug === null) return refuse('no GitHub repository to act in')
   if (slug.toLowerCase() !== pending.repo.toLowerCase()) return refuse(`the repository changed to ${slug}, review again`)
-  if (pr.id !== pending.prId || pr.number !== pending.prNumber) return refuse(`PR #${pending.prNumber} is no longer the branch's pull request, review again`)
+  if (pr.id !== pending.prId || pr.number !== pending.prNumber) return refuse(`PR #${pending.prNumber} is no longer the pull request you saw, review again`)
   if (account.login !== pending.login) return refuse(`the account changed to @${account.login}, review again`)
   if ('headOid' in pending && pending.headOid !== pr.headOid) return refuse(HEAD_CHANGED)
   if (pending.kind === 'admin-merge' && !pending.isSecondStep) return refuse('admin merge needs its second confirmation')
-  if (!availableActions(pr).includes(pending.kind)) return refuse('this action is no longer available for the pull request, review again')
+  if (!availableActions(pr, account.login).includes(pending.kind)) return refuse('this action is no longer available for the pull request, review again')
   if ('method' in pending && !pr.allowedMethods.includes(pending.method)) return refuse(`${pending.method} is not allowed in this repository`)
   if (pending.kind === 'admin-merge' && JSON.stringify(bypassedRules(pr)) !== JSON.stringify(pending.bypassed)) return refuse(RULES_CHANGED)
 
@@ -324,6 +397,13 @@ export async function execute(
       case 'auto-merge-off':
         args = autoMergeOffArgs(pending.prId)
         break
+      case 'approve':
+      case 'request-changes':
+        args = reviewArgs(pending.prId, pending.kind, pending.headOid, pending.body)
+        break
+      case 'ready-for-review':
+        args = readyArgs(pending.prId)
+        break
     }
   } catch (error) {
     return refuse(error instanceof Error ? error.message : 'the write could not be built')
@@ -333,7 +413,7 @@ export async function execute(
   await tokenFor(exec, pending.login)
   if (!(await isStillPending())) return refuse(CANCELLED)
   const ran = await runGh(exec, args, { login: pending.login, cwd: location.cwd, timeoutMs: WRITE_TIMEOUT_MS })
-  if (!ran.isOk) return refuse(ran.message, isResultUnknown(ran))
+  if (!ran.isOk) return refuse(ran.message, isResultUnknown(pending.kind, ran))
   const failure = pending.kind === 'merge' || pending.kind === 'admin-merge' ? null : graphqlFailure(ran.stdout)
   if (failure !== null) return refuse(failure)
   return { kind: pending.kind, isOk: true, message: successMessage(pending), at }

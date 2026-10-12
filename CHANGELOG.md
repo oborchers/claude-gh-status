@@ -5,6 +5,31 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-12
+
+### Added
+
+- List of the repository's open pull requests: `l` in the pane (and in the band when the branch has no pull request), `/pr list` (`ls`), and `/pr` alone when the branch has no pull request. Grouped as Yours, Review requested from you, Waiting for review, Other open; two lines per pull request; 10 per page with `n` and `p`; `h` hides drafts; read every 60 s while open.
+- Open any pull request in the detail pane: pick a row or `/pr <number>`. The pane shows `(selected)` and `b` (`/pr back`) returns to the branch's pull request. Merge, queue and the other actions act on the pull request the pane shows.
+- Reviews from the pane: `v` approve (optional comment), `w` request changes (text required), with `/pr approve` and `/pr changes`. The confirmation shows repository, number, head commit, account and the exact text; Enter in the text field does not post. Reviews are bound to the head commit you saw.
+- Ready for review for your own drafts: `e` and `/pr ready`.
+- Counts in the band: `N open · N yours · N review requested` when the branch has no pull request, read every 5 minutes.
+- An `N open` count at the end of the band row when the branch has a pull request.
+
+### Changed
+
+- Draft titles in the list are dim.
+- The band's confirmation shows `owner/repo #N`, the short head commit and the account.
+- A low rate limit (fewer than 500 points) holds the list and counts polling to every 5 minutes.
+- Approve, request changes and ready for review treat a timeout or a server error as an unknown result: the confirmation is cleared, the status is refreshed, and nothing is retried.
+- The demo pipeline fails only on some demo branches, so the list shows passing, running and failing rows.
+
+### Fixed
+
+- A change of repository clears a selected pull request, its data and a pending write.
+- Review text is cut at 65,000 characters without splitting a character, and a press whose text differs from the text drawn is refused.
+- The list and counts timers are cancelled when a second session starts.
+
 ## [0.1.4] - 2026-10-12
 
 ### Changed
@@ -56,6 +81,7 @@ First release.
 - Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
 - Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments by creation or edit time is shown, so a review bot that updates an older comment in place surfaces. Edits within 60 seconds of creation (automatic post-processing by bots) do not count. The fast check watches `pulls/{n}/comments` too; edits are seen within the first 100 comments of a list.
 
+[0.2.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.2.0
 [0.1.4]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.4
 [0.1.3]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.3
 [0.1.2]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.2

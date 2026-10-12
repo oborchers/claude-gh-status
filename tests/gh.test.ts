@@ -60,3 +60,37 @@ describe('classifyGhError for GraphQL internal errors', () => {
     expect(classifyGhError("gh: We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request")).toBe('server')
   })
 })
+
+describe('classifyGhError: faults of the server and the connection come first', () => {
+  test('a 5xx is a server fault even when the text also says not found, rate limit or authentication', () => {
+    expect(classifyGhError('gh: HTTP 502 Bad Gateway: upstream repository not found')).toBe('server')
+    expect(classifyGhError('HTTP 503 Service Unavailable: rate limit store down')).toBe('server')
+    expect(classifyGhError('gh: Server Error: authentication backend unavailable')).toBe('server')
+    expect(classifyGhError('gh: Not Found (HTTP 404)')).toBe('not-found')
+  })
+
+  test('connection resets, EOF, TLS and broken pipe are network faults', () => {
+    const texts = [
+      'Post "https://api.github.com/graphql": read tcp 10.0.0.2:51234->140.82.121.5:443: connection reset by peer',
+      'Post "https://api.github.com/graphql": EOF',
+      'Post "https://api.github.com/graphql": net/http: TLS handshake timeout',
+      'write tcp 10.0.0.2:51234: write: broken pipe',
+      'Post "https://api.github.com/graphql": unexpected end of JSON input',
+      'gh: not found anywhere, connection reset by peer',
+    ]
+    for (const text of texts) expect(classifyGhError(text)).toBe('network')
+  })
+
+  test('exit codes 124, 137 and 143 (timeout, killed, terminated) are timeouts whatever stderr says', () => {
+    for (const code of [124, 137, 143]) {
+      expect(classifyGhError('', '', code)).toBe('timeout')
+      expect(classifyGhError('gh: Not Found (HTTP 404)', '', code)).toBe('timeout')
+    }
+    expect(classifyGhError('', '', 1)).toBe('failed')
+  })
+
+  test('runGh passes the exit code on, so a killed gh is a timeout', async () => {
+    const exec: Exec = async () => ({ exitCode: 137, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
+    expect(await runGh(exec, ['api', 'user'], { login: null })).toMatchObject({ isOk: false, kind: 'timeout', exitCode: 137 })
+  })
+})

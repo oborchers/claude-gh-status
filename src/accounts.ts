@@ -63,7 +63,7 @@ export async function listLogins(exec: Exec): Promise<LoginList | { kind: 'gh-mi
 export async function canRead(exec: Exec, login: string, owner: string, repo: string): Promise<boolean> {
   const result = await runGh(
     exec,
-    ['api', 'graphql', '-f', `query=${PROBE_QUERY}`, '-F', `o=${owner}`, '-F', `n=${repo}`],
+    ['api', 'graphql', '-f', `query=${PROBE_QUERY}`, '-f', `o=${owner}`, '-f', `n=${repo}`],
     { login },
   )
   if (!result.isOk) return false

@@ -44,6 +44,18 @@ export const PR_QUERY = `query($owner: String!, $name: String!, $branch: String!
   rateLimit { cost remaining resetAt }
 }`
 
+/** Resolves one pull request by number: variables $owner, $name, $number. Carries the repository scalars normalize needs. */
+export const PR_BY_NUMBER_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    isPrivate
+    mergeCommitAllowed
+    squashMergeAllowed
+    rebaseMergeAllowed
+    pullRequest(number: $number) { id number state updatedAt headRepositoryOwner { login } }
+  }
+  rateLimit { cost remaining resetAt }
+}`
+
 /** The CheckRun and StatusContext selection, shared by the head commit and the merge group commit. */
 const CONTEXT_FIELDS = `__typename
         ... on CheckRun { databaseId name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestId: $id) checkSuite { workflowRun { databaseId workflow { name } } } }
@@ -53,7 +65,7 @@ const CONTEXT_FIELDS = `__typename
 export const PR_DETAIL_QUERY = `query($id: ID!) {
   node(id: $id) {
     ... on PullRequest {
-      id number state title url isDraft mergedBy { login } mergedAt closedAt headRefName headRefOid
+      id number state title url isDraft author { login } mergedBy { login } mergedAt closedAt headRefName headRefOid
       baseRefName mergeable mergeStateStatus reviewDecision
       isInMergeQueue isMergeQueueEnabled
       mergeQueueEntry { position state estimatedTimeToMerge headCommit { oid statusCheckRollup { state contexts(first: 100) { nodes {
@@ -429,6 +441,7 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     url: asStr(node.url) ?? '',
     isPrivate: repository?.isPrivate === true,
     isDraft: asBool(node.isDraft),
+    author: asStr(asObj(node.author)?.login),
     mergedBy: asStr(asObj(node.mergedBy)?.login),
     mergedAt: asStr(node.mergedAt),
     closedAt: asStr(node.closedAt),
@@ -496,6 +509,11 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const listError = graphqlMessage(list)
   if (listError !== null) return { kind: 'error', failure: failed(listError) }
 
+  return await readDetail(exec, location, login, list)
+}
+
+/** The second step of both lookups: pick the candidate of the list answer, read it in full, normalize. */
+async function readDetail(exec: Exec, location: RepoLocation, login: string, list: unknown): Promise<FetchedPullRequest> {
   const chosen = selectCandidate(candidatesOf(list), location)
   if (chosen === null) return { kind: 'ok', ...normalize({ list, detail: null }, location) }
 
@@ -506,4 +524,35 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const detailError = graphqlMessage(detail)
   if (detailError !== null) return { kind: 'error', failure: failed(detailError) }
   return { kind: 'ok', ...normalize({ list, detail }, location) }
+}
+
+/** Reshapes the by-number answer like a branch list with one candidate, so normalize reads both alike. */
+function asBranchList(answer: unknown): unknown {
+  const data = asObj(asObj(answer)?.data)
+  const repository = asObj(data?.repository)
+  if (data === null || repository === null) return answer
+  const { pullRequest, ...scalars } = repository
+  const nodes = pullRequest === null || pullRequest === undefined ? [] : [pullRequest]
+  return { ...asObj(answer), data: { ...data, repository: { ...scalars, pullRequests: { nodes } } } }
+}
+
+/**
+ * Looks up one pull request of the location's repository by number, for the
+ * pull request picked from the list: an id query, then the same detail query
+ * and normalizer as the branch lookup (2 points of rate limit, the same as
+ * fetchPullRequest; the detail query needs the node id, so they cannot merge).
+ * A number that is no pull request of the repository gives `pr: null`.
+ */
+export async function fetchPullRequestByNumber(exec: Exec, location: RepoLocation, login: string, number: number): Promise<FetchedPullRequest> {
+  const { owner, repo } = location
+  if (owner === null || repo === null) return { kind: 'error', failure: failed('no GitHub repository to look up') }
+  if (!Number.isSafeInteger(number) || number < 1) return { kind: 'error', failure: failed(`${number} is not a pull request number`) }
+  // -F types the number as an Int; owner and name stay strings (-f).
+  const ran = await runGh(exec, ['api', 'graphql', '-f', `query=${PR_BY_NUMBER_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${repo}`, '-F', `number=${number}`], { login, cwd: location.cwd })
+  if (!ran.isOk) return { kind: 'error', failure: ran }
+  const answer = parseJson(ran.stdout)
+  if (answer === null) return { kind: 'error', failure: unreadable() }
+  const error = graphqlMessage(answer)
+  if (error !== null) return { kind: 'error', failure: failed(error) }
+  return await readDetail(exec, location, login, asBranchList(answer))
 }

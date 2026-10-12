@@ -4,7 +4,7 @@ import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
 import type { CommentRef, PullRequest, RepoLocation } from '../src/model'
 import { activityAt, commentWhen, transitions } from '../src/status'
-import { EDIT_GRACE_MS, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, latestPerCheck, normalize, selectCandidate, statusContextState } from '../src/query'
+import { EDIT_GRACE_MS, PR_BY_NUMBER_QUERY, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, fetchPullRequestByNumber, latestPerCheck, normalize, selectCandidate, statusContextState } from '../src/query'
 import {
   prAdmin,
   prAutoMerge,
@@ -81,6 +81,14 @@ describe('normalize', () => {
     expect(open?.line).toBe(19)
     expect(open?.last?.author).toBe('williammartin')
     expect(pr?.threads.some(thread => thread.isResolved)).toBe(true)
+  })
+
+  test('the author comes from the detail query; a missing or deleted author is null', () => {
+    expect(PR_DETAIL_QUERY).toContain('author { login }')
+    expect(normalize(prGreen, cliLocation).pr?.author).toBe('fixture-author')
+    const deleted = structuredClone(prGreen) as { detail: { data: { node: Record<string, unknown> } } }
+    deleted.detail.data.node.author = null
+    expect(normalize(deleted, cliLocation).pr?.author).toBeNull()
   })
 
   test('a draft pull request', () => {
@@ -554,6 +562,67 @@ describe('fetchPullRequest', () => {
     const result = await fetchPullRequest(exec, { ...cliLocation, branch: null }, 'oborchers')
     expect(result.kind).toBe('error')
     expect(calls).toHaveLength(0)
+  })
+})
+
+/** The by-number answer for a pull request, built from a branch list fixture. */
+function byNumberAnswer(list: typeof prGreen.list, pullRequest: unknown = list.data.repository.pullRequests.nodes[0]): unknown {
+  const { pullRequests: _nodes, ...scalars } = list.data.repository
+  return { data: { repository: { ...scalars, isPrivate: false, pullRequest }, rateLimit: list.data.rateLimit } }
+}
+
+describe('fetchPullRequestByNumber', () => {
+  test('resolves the id by number, then reads the detail like the branch lookup', async () => {
+    forgetTokens()
+    const { exec, calls } = fakeExec([{ stdout: JSON.stringify(byNumberAnswer(prGreen.list)) }, { stdout: JSON.stringify(prGreen.detail) }])
+    const result = await fetchPullRequestByNumber(exec, cliLocation, 'oborchers', 14580)
+    expect(result.kind).toBe('ok')
+    if (result.kind !== 'ok') return
+    expect(result.pr?.number).toBe(14580)
+    expect(result.pr?.allowedMethods).toEqual(['merge', 'squash', 'rebase'])
+    expect(result.pr?.checks.length).toBeGreaterThan(0)
+    expect(result.rateLimit?.remaining).toBeGreaterThan(0)
+    const graphql = calls.filter(call => call.argv[1] === 'api')
+    expect(graphql).toHaveLength(2)
+    expect(graphql[0]?.argv).toContain('owner=cli')
+    expect(graphql[0]?.argv).toContain('name=cli')
+    expect(graphql[0]?.argv).toContain('number=14580')
+    expect(graphql[0]?.argv.some(arg => arg.startsWith('branch='))).toBe(false)
+    expect(graphql[1]?.argv.some(arg => arg.startsWith('id=PR_'))).toBe(true)
+  })
+
+  test('reads a pull request of another branch, a merged one included', async () => {
+    forgetTokens()
+    const { exec } = fakeExec([{ stdout: JSON.stringify(byNumberAnswer(prMerged.list)) }, { stdout: JSON.stringify(prMerged.detail) }])
+    const result = await fetchPullRequestByNumber(exec, { ...cliLocation, branch: 'other' }, 'oborchers', prMerged.detail.data.node.number)
+    expect(result.kind === 'ok' && result.pr?.state).toBe('merged')
+  })
+
+  test('a number that is no pull request costs one query and gives null', async () => {
+    forgetTokens()
+    const { exec, calls } = fakeExec([{ stdout: JSON.stringify(byNumberAnswer(prGreen.list, null)) }])
+    const result = await fetchPullRequestByNumber(exec, cliLocation, 'oborchers', 99999)
+    expect(result.kind === 'ok' && result.pr).toBe(null)
+    expect(calls.filter(call => call.argv[1] === 'api')).toHaveLength(1)
+  })
+
+  test('passes failures through and refuses a bad number or a missing remote without a call', async () => {
+    forgetTokens()
+    const failing = await fetchPullRequestByNumber(fakeExec([{ stdout: '', exitCode: 1, stderr: 'HTTP 429: secondary rate limit' }]).exec, cliLocation, 'oborchers', 5)
+    expect(failing.kind === 'error' && failing.failure.kind).toBe('rate-limited')
+    const garbage = await fetchPullRequestByNumber(fakeExec([{ stdout: '<html>' }]).exec, cliLocation, 'oborchers', 5)
+    expect(garbage.kind === 'error' && garbage.failure.kind).toBe('server')
+    const { exec, calls } = fakeExec([])
+    expect((await fetchPullRequestByNumber(exec, cliLocation, 'oborchers', 0)).kind).toBe('error')
+    expect((await fetchPullRequestByNumber(exec, cliLocation, 'oborchers', 1.5)).kind).toBe('error')
+    expect((await fetchPullRequestByNumber(exec, { ...cliLocation, owner: null }, 'oborchers', 5)).kind).toBe('error')
+    expect(calls).toHaveLength(0)
+  })
+
+  test('the id query is read-only and takes an Int number', () => {
+    expect(PR_BY_NUMBER_QUERY).toContain('pullRequest(number: $number)')
+    expect(PR_BY_NUMBER_QUERY).toContain('$number: Int!')
+    expect(PR_BY_NUMBER_QUERY.includes('mutation')).toBe(false)
   })
 })
 
