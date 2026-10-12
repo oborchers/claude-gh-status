@@ -542,7 +542,9 @@ describe('fetchPullRequest', () => {
   test('unreadable JSON and GraphQL errors without data are failures', async () => {
     forgetTokens()
     const garbage = await fetchPullRequest(fakeExec([{ stdout: '<html>' }]).exec, cliLocation, 'oborchers')
-    expect(garbage.kind).toBe('error')
+    expect(garbage.kind === 'error' && garbage.failure.kind).toBe('server')
+    const cutOff = await fetchPullRequest(fakeExec([{ stdout: '{"data":' }]).exec, cliLocation, 'oborchers')
+    expect(cutOff.kind === 'error' && cutOff.failure.kind).toBe('server')
     const errors = await fetchPullRequest(fakeExec([{ stdout: JSON.stringify({ data: null, errors: [{ message: 'boom' }] }) }]).exec, cliLocation, 'oborchers')
     expect(errors.kind === 'error' && errors.failure.message).toBe('boom')
   })
