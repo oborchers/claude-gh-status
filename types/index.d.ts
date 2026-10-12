@@ -369,7 +369,7 @@ declare module 'claude-code' {
       pending: PendingAction | null;
       /** Result of the last write action, shown in the pane. */
       outcome: ActionOutcome | null;
-      /** Open pull requests of the repository, while the list pane is open. */
+      /** Open pull requests of the repository, while the pane shows the list. */
       list: PrList | null;
       /** Zero-based page of the list (25 per page). */
       listPage: number;
@@ -381,6 +381,10 @@ declare module 'claude-code' {
       selectedSnapshot: Snapshot | null;
       /** Yours and review-requested counts for the band. */
       counts: ListCounts | null;
+      /** Which view the one pane shows: the list of open pull requests or the detail of one. */
+      paneView: 'list' | 'detail';
+      /** Key of the pane element that holds the focus ring (`pr-<n>` in the list); null until known. */
+      paneFocus: string | null;
     };
   }
 }

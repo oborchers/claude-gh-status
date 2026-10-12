@@ -91,7 +91,7 @@ Take five views:
 2. Compact view: terminal about 100 columns, `/pr` inline above the prompt.
 3. Band: a single-row crop of the band.
 4. List view (`docs/images/list-view.png`): `/pr list`, with the demo pull requests above, a draft among them and labels set. Crop to the pane and its filled rows.
-5. Selected view (`docs/images/selected-view.png`): pick a row in the list; the pane shows `(selected)` and `b: back`. Crop to the pane.
+5. Selected view (`docs/images/selected-view.png`): press Enter on a row in the list; the same pane switches to that pull request and shows `b: back to list` in its header (list and selected view are one pane, not two). Crop to the pane.
 
 Method (herdr, headless Playwright, no OS screenshots):
 

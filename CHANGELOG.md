@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-12
+
+### Changed
+
+- The list and the detail of a pull request share one pane (`gh-status`) instead of two. Enter or a click on a row opens the pull request in place; `b` or `l` (or `/pr back`) return to the list with the focus on the same row, keeping the page and the draft filter. The header of a picked pull request shows `b: back to list`; the branch's pull request shows `l: all PRs`.
+- One focus stop per pull request, with a calm two-line highlight (a `▸` marker, the same highlight under the mouse pointer) instead of two buttons per pull request.
+- The list is read every 60 s only while the pane shows it.
+
+### Fixed
+
+- Color blocks on the focused row of the list.
+- Enter in the list and `l` in the detail did not move between the two views.
+
 ## [0.2.0] - 2026-10-12
 
 ### Added

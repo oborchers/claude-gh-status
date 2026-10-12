@@ -1441,6 +1441,46 @@ describe('the list entry points', () => {
     expect(await textOf(ui)).not.toContain('all PRs')
   })
 
+  test('the header of a selected PR is a Button keyed pr-N that only refreshes, with b: back to list and l', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const view = { ...prView({ number: 42, title: 'A fairly long title for the header row to cut', checks: [makeCheck()] }, 70), isSelected: true }
+      const ui = await rig.pane($, surface, view, handlersFor(calls, { back: () => void calls.push('back'), openList: () => void calls.push('openList') }))
+      const lines = (await textOf(ui)).split('\n')
+      expect(lines[0]).toContain('#42 A fairly')
+      expect(lines[0]).not.toContain('PR #42')
+      expect(lines[0]).toContain('b: back to list')
+      expect(lines[0]).not.toContain('all PRs')
+      for (const row of lines.slice(0, 4)) expect(cellWidth(row)).toBeLessThanOrEqual(70)
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(expect.arrayContaining(['b', 'l']))
+      await ui.press({ key: 'pr-42' })
+      await ui.press({ key: 'back' })
+      await ui.press({ key: 'pane-list' })
+      expect(calls).toEqual(['refresh', 'back', 'back'])
+      await ui.unmount()
+    }
+  })
+
+  test('the branch PR header keeps l: all PRs; both navigations are hidden while a confirmation waits', async ($, on) => {
+    const rig = createRig(on)
+    const plain = await rig.pane($, 'terminal', prView({ number: 42, checks: [makeCheck()] }, 80), handlersFor([], { openList: () => {}, back: () => {} }))
+    expect((await textOf(plain)).split('\n')[0]).toContain('l: all PRs')
+    expect(await plain.find({ key: 'back' })).toBeUndefined()
+    await plain.unmount()
+    for (const isSelected of [false, true]) {
+      const base = { ...prView({ author: 'octocat', checks: [makeCheck()] }, 100), isSelected }
+      const pending = buildPending('approve', base.snapshot, undefined, 0, 'x')
+      if (pending === null) throw new Error('approve is not offered')
+      for (const view of [{ ...base, pending }, { ...base, hasPending: true }]) {
+        const ui = await rig.pane($, 'terminal', view, handlersFor([], { openList: () => {}, back: () => {} }))
+        expect(await ui.find({ key: 'pane-list' })).toBeUndefined()
+        expect(await ui.find({ key: 'back' })).toBeUndefined()
+        await ui.unmount()
+      }
+    }
+  })
+
   test('the pane without a PR offers the list too', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.pane($, 'terminal', viewFor(noPr, 80), handlersFor([], { openList: () => {} }))

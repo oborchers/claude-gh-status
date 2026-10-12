@@ -51,7 +51,7 @@ function crowd(others = 22): ListItem[] {
 }
 
 function viewOf(list: PrList | null, columns: number, extra: Partial<ListView> = {}): ListView {
-  return { list, page: 0, hideDrafts: false, selectedNumber: null, counts: null, nowMs: NOW, columns, palette: PALETTES.claude, ...extra }
+  return { list, page: 0, hideDrafts: false, focusedKey: null, counts: null, nowMs: NOW, columns, palette: PALETTES.claude, ...extra }
 }
 
 function handlersFor(calls: string[]): ListHandlers {
@@ -61,8 +61,7 @@ function handlersFor(calls: string[]): ListHandlers {
     prevPage: () => void calls.push('prev'),
     toggleDrafts: () => void calls.push('drafts'),
     refresh: () => void calls.push('refresh'),
-    back: () => void calls.push('back'),
-    closeList: () => void calls.push('close'),
+    closePane: () => void calls.push('close'),
     openUrl: (url) => void calls.push(`openUrl ${url}`),
   }
 }
@@ -94,7 +93,7 @@ function rowsOf(node: unknown): string[] {
   const children = element.children ?? []
   if (element.type === 'Button' || element.type === 'Link') {
     const text = children.length > 0 ? children.flatMap(rowsOf).join('') : String(props.label ?? '')
-    return [props.hotkey !== undefined && children.length === 0 ? `${String(props.hotkey)}: ${text}` : text]
+    return (props.hotkey !== undefined && children.length === 0 ? `${String(props.hotkey)}: ${text}` : text).split('\n')
   }
   const parts = children.map((child) => {
     const margin = Number((child as Node).props?.marginLeft ?? 0)
@@ -105,7 +104,8 @@ function rowsOf(node: unknown): string[] {
   return [parts.map((lines) => lines.join('\n')).join(' '.repeat(gap))]
 }
 
-const linesOf = async (ui: Mounted): Promise<string[]> => rowsOf(await ui.drawn())
+/** The drawn lines, without the padding a focused row is filled to the width with. */
+const linesOf = async (ui: Mounted): Promise<string[]> => rowsOf(await ui.drawn()).map((line) => line.trimEnd())
 const textOf = async (ui: Mounted): Promise<string> => (await linesOf(ui)).join('\n')
 
 function nodesOf(node: unknown): Node[] {
@@ -307,10 +307,10 @@ describe('renderList rows', () => {
     expect(lines.slice(at, at + 8)).toEqual([
       '  ✗ fix: rounding in invoice totals  bug  payments',
       '    #15 · @oborchers · opened 2 h ago · 1/18 checks failing · review required · 💬 2',
-      ' ',
+      '',
       '  ● feat: add order history page  frontend',
       '    #14 · @oborchers · opened 2 h ago · 11/18 checks running',
-      ' ',
+      '',
       '  ✓ feat: add checkout flow',
       '    #1 · @oborchers · opened 5 h ago · 18/18 passing · approved',
     ])
@@ -376,8 +376,12 @@ describe('renderList rows', () => {
     for (const palette of [PALETTES.claude, PALETTES.github]) {
       const failingItem = item(9, { checks: { passed: 1, failed: 1, pending: 0, total: 2 }, reviewDecision: 'approved', comments: 3 })
       const ui = await rig.list($, 'terminal', viewOf(listOf([failingItem]), 120, { palette }), handlersFor([]))
-      const meta = await ui.find({ key: 'pr-9-meta' })
-      const texts = nodesOf(meta).filter((node) => node.type === 'Text' && typeof node.children?.[0] === 'string' && node.children[0].trim() !== '')
+      const row = await ui.find({ key: 'pr-9' })
+      // The facts line: every Text after the one that starts with the newline.
+      const all = nodesOf(row).filter((node) => node.type === 'Text' && typeof node.children?.[0] === 'string')
+      const start = all.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
+      const texts = all.slice(start + 1).filter((node) => String(node.children?.[0]).trim() !== '')
+      expect(start).toBeGreaterThan(0)
       expect(texts.length).toBeGreaterThan(5)
       for (const node of texts) {
         const text = String(node.children?.[0])
@@ -447,9 +451,9 @@ describe('renderList rows', () => {
     expect(cellWidth(await at(long, many, 30))).toBeLessThanOrEqual(30)
   })
 
-  test('the selected pull request gets the marker before its symbol and every other row is indented to line up', async ($, on) => {
+  test('the focused pull request gets the marker before its symbol and every other row is indented to line up', async ($, on) => {
     const rig = createRig(on)
-    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 100, { selectedNumber: 14 }), handlersFor([]))
+    const ui = await rig.list($, 'terminal', viewOf(listOf(rich()), 100, { focusedKey: 'pr-14' }), handlersFor([]))
     const lines = await linesOf(ui)
     const marked = lines.filter((line) => line.startsWith('▸'))
     expect(marked).toEqual(['▸ ● feat: add order history page  frontend'])
@@ -457,14 +461,82 @@ describe('renderList rows', () => {
     const failingLine = lines.find((line) => line.includes('fix: rounding')) ?? ''
     expect(failingLine.indexOf('✗')).toBe((marked[0] ?? '').indexOf('●'))
     expect(failingLine.indexOf('fix:')).toBe((marked[0] ?? '').indexOf('feat:'))
-    // The facts line is indented the same on selected and unselected rows.
+    // The facts line is indented the same on focused and other rows.
     const metas = lines.filter((line) => /^ {4}#\d+/.test(line))
     expect(metas).toHaveLength(3)
     expect(lines.filter((line) => line.includes('#') && line.startsWith('▸'))).toHaveLength(0)
-    expect(await textOf(ui)).toContain('b: back to branch PR')
     const none = await rig.list($, 'terminal', viewOf(listOf(rich()), 100), handlersFor([]))
     expect(await textOf(none)).not.toContain('▸')
-    expect(await textOf(none)).not.toContain('back to branch PR')
+    expect(await textOf(none)).not.toContain('back to')
+  })
+
+  describe('the focused row', () => {
+    const FOCUS_BG = '#30363d'
+    const FOCUS_FG = '#e6edf3'
+    const FOCUS_DIM = '#8b949e'
+    const textsOf = (row: unknown): Node[] => nodesOf(row).filter((node) => node.type === 'Text' && typeof node.children?.[0] === 'string')
+    const colored = [item(15, { title: 'fix', checks: { passed: 0, failed: 1, pending: 0, total: 1 }, labels: [{ name: 'bug', color: 'd73a4a' }] })]
+
+    test('draws the title line with the colors swapped, so the engine inverse shows them on the focus background', async ($, on) => {
+      const rig = createRig(on)
+      for (const palette of [PALETTES.claude, PALETTES.github]) {
+        const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100, { palette, focusedKey: 'pr-15' }), handlersFor([]))
+        const texts = textsOf(await ui.find({ key: 'pr-15' }))
+        const first = texts.slice(0, texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
+        const named = (content: string) => first.find((node) => node.children?.[0] === content)
+        expect(named('✗')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.failure })
+        expect(named('fix')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG, bold: true })
+        expect(named('bug')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: mutedLabelColor('d73a4a') })
+        expect(named('▸ ')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.pending })
+        // The line is filled to the width, swapped as well.
+        const pad = first.at(-1)
+        expect(String(pad?.children?.[0]).trim()).toBe('')
+        expect(pad?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
+        expect(cellWidth(first.map((node) => String(node.children?.[0])).join(''))).toBe(100)
+        await ui.unmount()
+      }
+    })
+
+    test('draws the facts line dim on the focus background, filled to the width', async ($, on) => {
+      const rig = createRig(on)
+      const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100, { focusedKey: 'pr-15' }), handlersFor([]))
+      const texts = textsOf(await ui.find({ key: 'pr-15' }))
+      const second = texts.slice(texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
+      expect(second.length).toBeGreaterThan(3)
+      for (const node of second) expect(node.props).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      expect(cellWidth(second.map((node) => String(node.children?.[0])).join('').slice(1))).toBe(100)
+      await ui.unmount()
+    })
+
+    test('keeps the normal colors when another row, or none, has the focus', async ($, on) => {
+      const rig = createRig(on)
+      for (const focusedKey of [null, 'pr-99']) {
+        const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100, { focusedKey }), handlersFor([]))
+        const texts = textsOf(await ui.find({ key: 'pr-15' }))
+        const named = (content: string) => texts.find((node) => node.children?.[0] === content)
+        expect(named('✗')?.props).toMatchObject({ color: PALETTES.claude.failure })
+        expect(named('✗')?.props?.backgroundColor).toBeUndefined()
+        expect(named('fix')?.props?.backgroundColor).toBeUndefined()
+        expect(named('fix')?.props?.bold).toBe(true)
+        for (const node of texts.slice(texts.findIndex((entry) => String(entry.children?.[0]).startsWith('\n')) + 1)) expect(node.props?.backgroundColor).toBeUndefined()
+        expect(texts.some((node) => node.children?.[0] === '▸ ')).toBe(false)
+        await ui.unmount()
+      }
+    })
+
+    test('a hovered row looks like a focused one: the same swapped colors, the focus background on the facts line', async ($, on) => {
+      const rig = createRig(on)
+      const ui = await rig.list($, 'terminal', viewOf(listOf(colored), 100), handlersFor([]))
+      const texts = textsOf(await ui.find({ key: 'pr-15' }))
+      const split = texts.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
+      const hoverOf = (content: string) => (texts.find((node) => node.children?.[0] === content) as { hover?: unknown } | undefined)?.hover
+      expect(hoverOf('✗')).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
+      expect(hoverOf('fix')).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
+      for (const node of texts.slice(split)) expect((node as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
+      const rows = (await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))
+      expect(rows.map((box) => String(box.key))).toEqual(['row-15'])
+      await ui.unmount()
+    })
   })
 
   test('long titles are cut with an ellipsis', async ($, on) => {
@@ -498,7 +570,7 @@ describe('renderList fits the width', () => {
     const rig = createRig(on)
     for (const columns of [20, 40, 80, 120, 160]) {
       for (const surface of SURFACES) {
-        const ui = await rig.list($, surface, viewOf(listOf([...heavy(), ...crowd()]), columns, { selectedNumber: 5001 }), handlersFor([]))
+        const ui = await rig.list($, surface, viewOf(listOf([...heavy(), ...crowd()]), columns, { focusedKey: 'pr-5001' }), handlersFor([]))
         for (const line of await linesOf(ui)) expect(cellWidth(line)).toBeLessThanOrEqual(columns)
         await ui.unmount()
       }
@@ -526,9 +598,9 @@ describe('renderList fits the width', () => {
 
   test('footer buttons wrap into several lines instead of overflowing', async ($, on) => {
     const rig = createRig(on)
-    const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 40, { selectedNumber: 1, page: 1 }), handlersFor([]))
+    const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 40, { focusedKey: 'pr-1', page: 1 }), handlersFor([]))
     const lines = await linesOf(ui)
-    expect(lines.filter((line) => /^[nphrb]: /.test(line)).length).toBeGreaterThan(1)
+    expect(lines.filter((line) => /^[nphrx]: /.test(line)).length).toBeGreaterThan(1)
     for (const line of lines) expect(cellWidth(line)).toBeLessThanOrEqual(40)
   })
 })
@@ -538,13 +610,13 @@ describe('renderList presses', () => {
     const rig = createRig(on)
     for (const surface of SURFACES) {
       const calls: string[] = []
-      const ui = await rig.list($, surface, viewOf(listOf(crowd()), 120, { selectedNumber: 2, page: 0 }), handlersFor(calls))
+      const ui = await rig.list($, surface, viewOf(listOf(crowd()), 120, { focusedKey: 'pr-2', page: 0 }), handlersFor(calls))
       await ui.press({ key: 'pr-5' })
       await ui.press({ key: 'list-next' })
       await ui.press({ key: 'list-drafts' })
       await ui.press({ key: 'list-refresh' })
-      await ui.press({ key: 'list-back' })
-      expect(calls).toEqual(['select 5', 'next', 'drafts', 'refresh', 'back'])
+      await ui.press({ key: 'list-close' })
+      expect(calls).toEqual(['select 5', 'next', 'drafts', 'refresh', 'close'])
       expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
       await ui.unmount()
 
@@ -555,27 +627,26 @@ describe('renderList presses', () => {
     }
   })
 
-  test('pressing either line of a pull request selects it', async ($, on) => {
+  test('pressing a pull request selects it, whichever line it is clicked on', async ($, on) => {
     const rig = createRig(on)
     for (const surface of SURFACES) {
       const calls: string[] = []
       const ui = await rig.list($, surface, viewOf(listOf(crowd()), 120), handlersFor(calls))
       await ui.press({ key: 'pr-5' })
-      await ui.press({ key: 'pr-5-meta' })
-      await ui.press({ key: 'pr-6-meta' })
-      expect(calls).toEqual(['select 5', 'select 5', 'select 6'])
+      await ui.press({ key: 'pr-6' })
+      expect(calls).toEqual(['select 5', 'select 6'])
       await ui.unmount()
     }
   })
 
-  test('every pull request has two plain buttons, the title line keyed pr-N and the facts line pr-N-meta', async ($, on) => {
+  test('every pull request is one plain button keyed pr-N, so the focus ring stops once per pull request', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(crowd()), 120), handlersFor([]))
     const buttons = await ui.findAll({ type: 'Button' })
     const keys = buttons.map((button) => String(button.key)).filter((key) => key.startsWith('pr-'))
     expect(keys.filter((key) => /^pr-\d+$/.test(key))).toHaveLength(10)
-    expect(keys.filter((key) => /^pr-\d+-meta$/.test(key))).toHaveLength(10)
-    expect(new Set(keys).size).toBe(20)
+    expect(keys.filter((key) => /-meta$/.test(key))).toHaveLength(0)
+    expect(new Set(keys).size).toBe(10)
     for (const button of buttons.filter((candidate) => String(candidate.key).startsWith('pr-'))) expect(button.props.plain).toBe(true)
   })
 })

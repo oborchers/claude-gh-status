@@ -12,7 +12,7 @@ The pull request status of your current branch, live inside Claude Code, so you 
 - **An honest verdict.** `ready to merge · 1 check failed` is red, it is yellow while checks run, and it is green only when everything is clean.
 - **Reviews and unresolved threads.** Who approved, who asked for changes, and what is still open.
 - **Merge queue.** Your position in the queue and the queue's own checks.
-- **All open pull requests.** A grouped list of the repository's open pull requests, and any of them in the pane.
+- **All open pull requests.** A grouped list of the repository's open pull requests, and any of them in the same pane.
 - **Reviews from the terminal.** Approve, request changes, or mark your own draft ready for review, each after a confirmation.
 - **The right account per repository.** Personal and work repositories each use their own `gh` login, with no `gh auth switch`.
 
@@ -63,19 +63,20 @@ Keys, when the band has the keyboard (a key only appears when its action is avai
 
 <img src="docs/images/list-view.png" alt="The list pane: the repository's open pull requests in groups, two lines each with status symbol, title, labels, number, author, age, checks, review state and comments" width="750">
 
-Open the list with `l` in the band (when the branch has no pull request) or in the pane, with `/gh-pr list` (`ls`), or with `/gh-pr` alone when the branch has no pull request.
+Open the list with `l` in the band (when the branch has no pull request) or in the pane, with `/gh-pr list` (`ls`), or with `/gh-pr` alone when the branch has no pull request. The list and the detail of a pull request are two views of one pane, not two tabs.
 
 - **Groups, in this order.** Yours, Review requested from you, Waiting for review, Other open.
 - **Two lines per pull request.** The first has the status symbol (`✓` passing, `✗` failing, `●` running, `◷` queued), the title and the labels in a muted version of their GitHub color. The second has the number, author, age, checks, review state and comment count.
+- **One stop per pull request.** The arrow keys move one pull request at a time. The focused one shows a `▸` marker and a calm highlight; the mouse pointer highlights a row the same way. Enter or a click opens it.
 - **Pages of 10.** `n` next, `p` previous.
 - **Drafts.** Draft titles are dim. `h` hides or shows them.
-- **Live.** The list is read again every 60 s while it is open, and `r` refreshes now.
+- **Live.** The list is read again every 60 s while the pane shows it, and `r` refreshes now.
 
 ## Open any pull request
 
-<img src="docs/images/selected-view.png" alt="The detail pane showing a pull request picked from the list, marked (selected), with a back key" width="750">
+<img src="docs/images/selected-view.png" alt="The detail pane showing a pull request picked from the list, with a back key in its header" width="750">
 
-Pick a row in the list, or type `/gh-pr <number>`. The pane shows that pull request and marks it `(selected)`, with `b: back` to return to the branch's pull request. The band keeps showing the branch's own pull request.
+Press Enter on a row in the list, or type `/gh-pr <number>`. The same pane switches to that pull request, with `b: back to list` in its header. `b` (or `l`) returns to the list with the focus on the row you came from; the page and the draft filter stay. `/gh-pr back` does the same. The band keeps showing the branch's own pull request.
 
 Merging, the queue and the other actions act on the pull request the pane shows, with the same confirmation and bindings as for the branch's pull request. Closing the pane ends the selection.
 
@@ -123,14 +124,14 @@ The command is `/pr`. If a skill or another command already uses that name in a 
 
 | Command | Does |
 | --- | --- |
-| `/pr` | Open the detail pane (the list, when the branch has no pull request) |
+| `/pr` | Show the branch's pull request in the pane (the list, when the branch has no pull request) |
 | `/pr refresh` | Refresh now |
 | `/pr open` | Open the pull request on GitHub |
 | `/pr copy` | Copy the pull request URL |
 | `/pr close` | Close the pane (and drop a pending confirmation) |
 | `/pr list` (`/pr ls`) | Open the list of open pull requests |
 | `/pr <number>` | Show that pull request in the pane |
-| `/pr back` | Show the branch's pull request again |
+| `/pr back` | Back to the list from a pull request picked there |
 | `/pr approve` | Ask to approve (optional comment) |
 | `/pr changes` | Ask to request changes (text required) |
 | `/pr ready` | Ask to mark your own draft ready for review |
@@ -151,8 +152,8 @@ Keys (a key only appears when its action is available):
 | Where | Keys |
 | --- | --- |
 | Band | `l` list (without a pull request), `d` details, `o` open on GitHub, `f` fix CI (when a check failed), `m` merge, `q` add to queue, `t` retry failed jobs (when a failed run can be re-run) |
-| List | `n` next page, `p` previous page, `h` hide or show drafts, `r` refresh, `b` back (while a pull request is selected), `x` close; click a row to open it |
-| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `v` approve, `w` request changes, `e` ready for review, `l` list, `b` back (while selected), `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed), `t` retry failed jobs (when a failed run can be re-run) |
+| List | up and down move between pull requests, Enter or a click opens one in the same pane, `n` next page, `p` previous page, `h` hide or show drafts, `r` refresh, `x` close the pane |
+| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `v` approve, `w` request changes, `e` ready for review, `l` list (`l` or `b` back to the list while a picked pull request is shown), `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed), `t` retry failed jobs (when a failed run can be re-run) |
 | Confirmation (band or pane) | `y` confirm (`b` for the final admin step), `n` cancel; in a review's text field, Esc leaves the field first |
 
 Keys work while the band or pane has the keyboard: focus the band or pane with ctrl+x tab or a click. If your terminal multiplexer takes ctrl+x tab, click the band to focus it. Esc returns to the prompt. There is no separate dialog: a button press or a slash command sets the confirmation, and both the band (a one-line prompt with `y` and `n`) and the pane's Merge section (full details) show it, so whichever one holds the keyboard can answer. Cancel with `n` (or `/pr close`, or the pane's close mark); Esc alone only returns the keyboard. With several allowed merge methods the pane's confirmation shows a method selector (squash is the default if allowed).
@@ -192,7 +193,7 @@ Shown as rows in `/config`.
 - When fewer than 500 points remain, polling slows to at most once a minute.
 - It also refreshes immediately after `git push`, `pull`, `checkout`, `switch`, `rebase`, `merge`, `commit`, `reset` and `gh pr` or `gh run` commands run by Claude, when a turn ends, when the working directory changes, and on `/pr`.
 - Job details for the pane are fetched only while the pane is open.
-- While the list is open it is read every 60 s (about 3 points per read). The counts in the band are read every 5 minutes (1 point). Both slow to at most once every 5 minutes when fewer than 500 points remain.
+- While the pane shows the list it is read every 60 s (about 3 points per read). The counts in the band are read every 5 minutes (1 point). Both slow to at most once every 5 minutes when fewer than 500 points remain.
 - A short toast announces changes in the pipeline, reviews, comments or mergeability (setting `toasts`).
 
 ## Limits
