@@ -301,7 +301,7 @@ describe('renderBand', () => {
         reviewDecision: 'review-required',
         mergeStateStatus: 'blocked',
         reviewRequests: [{ reviewer: 'ben', isTeam: false }],
-        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', url: 'https://x/c' } }],
+        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', editedAt: null, url: 'https://x/c' } }],
       },
       160,
       [],
@@ -337,7 +337,7 @@ describe('renderBand', () => {
           reviewDecision: 'review-required',
           mergeStateStatus: 'blocked',
           reviewRequests: [{ reviewer: 'someone-with-a-long-login', isTeam: false }],
-          threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', url: 'https://x/c' } }],
+          threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', editedAt: null, url: 'https://x/c' } }],
         },
         columns,
       )
@@ -467,10 +467,10 @@ describe('renderPane', () => {
         mergeStateStatus: 'blocked',
         reviewRequests: [{ reviewer: 'ben', isTeam: false }, { reviewer: 'acme/core', isTeam: true }],
         viewerCanMergeAsAdmin: true,
-        lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/last' },
+        lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/last' },
         threads: [
-          { isResolved: false, isOutdated: false, path: 'src/ui/band.tsx', line: 12, last: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/t1' } },
-          { isResolved: false, isOutdated: true, path: 'old.ts', line: 3, last: { author: 'ben', createdAt: '2025-12-30T00:06:00Z', url: 'https://x/t2' } },
+          { isResolved: false, isOutdated: false, path: 'src/ui/band.tsx', line: 12, last: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/t1' } },
+          { isResolved: false, isOutdated: true, path: 'old.ts', line: 3, last: { author: 'ben', createdAt: '2025-12-30T00:06:00Z', editedAt: null, url: 'https://x/t2' } },
         ],
       },
       columns,
@@ -601,9 +601,23 @@ describe('renderPane', () => {
     }
   })
 
+  test('edited comments read "edited" relative to the edit time, in rows and the last comment line', async ($, on) => {
+    const rig = createRig(on)
+    const view = prView(
+      {
+        lastComment: { author: 'bot', createdAt: '2026-01-01T00:00:00Z', editedAt: '2026-01-01T00:08:00Z', url: 'https://x/last' },
+        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'bot', createdAt: '2026-01-01T00:00:00Z', editedAt: '2026-01-01T00:08:00Z', url: 'https://x/t1' } }],
+      },
+      80,
+    )
+    const text = await textOf(await rig.pane($, 'terminal', view, handlersFor([])))
+    expect(text).toContain('💬 a.ts:1 @bot edited 2 min ago')
+    expect(text).toContain('Last comment @bot edited 2 min ago')
+  })
+
   test('summarizes new activity since the last look', async ($, on) => {
     const rig = createRig(on)
-    const view = prView({ lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/last' } }, 80, [], '2026-01-01T00:00:00Z')
+    const view = prView({ lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/last' } }, 80, [], '2026-01-01T00:00:00Z')
     const text = await textOf(await rig.pane($, 'terminal', view, handlersFor([])))
     expect(text).toContain('1 new since you looked')
   })

@@ -4,7 +4,7 @@ import type { RenderElement } from 'claude-code'
 
 import { availableActions } from '../actions'
 import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
-import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
+import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
 import { cellWidth, count, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
@@ -318,7 +318,7 @@ function reviewsSection(table: UiTable, view: View, status: Status): RenderEleme
 function threadRow(table: UiTable, view: View, handlers: Handlers, thread: ReviewThread, index: number): RenderElement {
   const { Button, Text } = table
   const where = thread.path === null ? 'thread' : thread.line === null ? thread.path : `${thread.path}:${thread.line}`
-  const who = thread.last === null ? '' : ` @${thread.last.author} ${relativeTime(thread.last.createdAt, view.nowMs)}`
+  const who = thread.last === null ? '' : ` ${commentWhen(thread.last, view.nowMs)}`
   const text = `${truncateStart(where, Math.max(8, view.columns - cellWidth(who) - 2))}`
   const url = thread.last?.url
   if (url === undefined) {
@@ -362,7 +362,7 @@ function conversationSection(table: UiTable, view: View, handlers: Handlers, pr:
     rows.push(
       <Button key="last-comment" plain onPress={() => handlers.openUrl(url)}>
         <Text>Last comment </Text>
-        <Text dimColor>{truncate(`@${last.author} ${relativeTime(last.createdAt, view.nowMs)}`, Math.max(8, view.columns - 14))}</Text>
+        <Text dimColor>{truncate(commentWhen(last, view.nowMs), Math.max(8, view.columns - 14))}</Text>
       </Button>,
     )
   } else {

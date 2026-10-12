@@ -7,7 +7,7 @@ The pull request status of your current branch, live inside Claude Code, so you 
 ## What you see
 
 - **A band above the prompt.** One line with the PR number, state badge, verdict, pipeline, reviews, unresolved threads and the account in use.
-- **A detail pane with `/pr`.** Merge section, reviews, conversation, and the full pipeline.
+- **A detail pane with `/pr`.** Merge section, reviews, conversation, and the full pipeline. Comment times read `@bot 4 min ago`, or `@bot edited 2 min ago` once a comment was edited in place (review bots do that).
 - **A live pipeline.** Every job with its running step, updated while checks run.
 - **An honest verdict.** `ready to merge · 1 check failed` is red, it is yellow while checks run, and it is green only when everything is clean.
 - **Reviews and unresolved threads.** Who approved, who asked for changes, and what is still open.

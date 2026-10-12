@@ -86,6 +86,8 @@ export type ReviewRequest = {
 export type CommentRef = {
   author: string;
   createdAt: string;
+  /** lastEditedAt; null when the comment was never edited. */
+  editedAt: string | null;
   url: string;
 };
 

@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last five comments (by creation or edit time) is shown, so a review bot that updates an older comment in place surfaces.
+- The fast check also watches `pulls/{n}/comments`, so review comment edits trigger a refresh. Edits are only seen within the first 100 comments of a list (GitHub lists oldest first).
+
 ## [0.1.0] - Unreleased
 
 ### Added
