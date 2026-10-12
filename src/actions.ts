@@ -297,7 +297,7 @@ export async function execute(
   const slug = repoSlug(location)
   if (slug === null) return refuse('no GitHub repository to act in')
   if (slug.toLowerCase() !== pending.repo.toLowerCase()) return refuse(`the repository changed to ${slug}, review again`)
-  if (pr.id !== pending.prId || pr.number !== pending.prNumber) return refuse(`PR #${pending.prNumber} is no longer the branch's pull request, review again`)
+  if (pr.id !== pending.prId || pr.number !== pending.prNumber) return refuse(`PR #${pending.prNumber} is no longer the pull request you saw, review again`)
   if (account.login !== pending.login) return refuse(`the account changed to @${account.login}, review again`)
   if ('headOid' in pending && pending.headOid !== pr.headOid) return refuse(HEAD_CHANGED)
   if (pending.kind === 'admin-merge' && !pending.isSecondStep) return refuse('admin merge needs its second confirmation')
