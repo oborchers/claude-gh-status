@@ -4,7 +4,7 @@
 import type { RenderElement } from 'claude-code'
 
 import type { PendingAction, PipelineSummary, PullRequest, Snapshot, Status } from '../model'
-import { availableActions } from '../actions'
+import { availableActions, rerunnableRunIds } from '../actions'
 import { formatDuration, mergeTone, nonCheckBlockers, prBadge, queueLine, verdictText } from '../status'
 import { cellWidth, fitSegments, repeatsBadge, snapshotLine, truncate } from './format'
 import type { Fittable } from './format'
@@ -116,6 +116,9 @@ function buttonSegments(pr: PullRequest, status: Status, handlers: Handlers): Se
   if (requestMerge !== undefined && actions.includes('merge')) add('m', 'merge', () => requestMerge())
   const requestEnqueue = handlers.requestEnqueue
   if (requestEnqueue !== undefined && actions.includes('enqueue')) add('q', 'queue', () => requestEnqueue())
+  // Last, so it is the first button dropped when the row is tight.
+  const rerunFailed = handlers.rerunFailed
+  if (rerunFailed !== undefined && rerunnableRunIds(pr).length > 0) add('t', 'retry failed', () => rerunFailed())
   return buttons
 }
 

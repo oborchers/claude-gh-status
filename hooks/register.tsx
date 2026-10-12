@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
-import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, isTooEarly, transitionToastPrefix, withMethod } from '../src/actions'
+import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isTooEarly, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
 import { fastCheck } from '../src/etag'
 import { runGh, tokenFor } from '../src/gh'
@@ -19,6 +19,7 @@ import { renderBand } from '../src/ui/band'
 import { confirmTitle } from '../src/ui/confirm'
 import { paletteFor } from '../src/ui/colors'
 import type { Palette } from '../src/ui/colors'
+import { count } from '../src/ui/format'
 import { paneRowCount, renderPane } from '../src/ui/pane'
 import type { Handlers, UiTable, View } from '../src/ui/contract'
 
@@ -33,7 +34,7 @@ const DEFAULT_IDLE_SECONDS = 30
 /** Commands after which the pull request is likely to have changed. */
 const CHANGING_COMMAND = /\bgit\s+(push|pull|checkout|switch|rebase|merge|commit|reset)\b|\bgh\s+(pr|run)\b/
 
-const USAGE = 'Usage: /pr [refresh | open | close | copy | fix | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]'
+const USAGE = 'Usage: /pr [refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]'
 
 /** The write subcommands and their short aliases. */
 const WRITE_COMMANDS: Record<string, 'merge' | 'enqueue' | 'dequeue' | 'auto' | 'admin-merge'> = {
@@ -62,6 +63,9 @@ const outcomeState = atom({ plugin: 'gh-status', key: 'outcome' } as const, null
 
 /** One confirm press at a time: a second press while one is being handled is dropped. */
 const confirmGuard = { isBusy: false }
+
+/** One re-run at a time: a second press while one is running is dropped. */
+const rerunGuard = { isBusy: false }
 
 /** The transition toast the mod's own successful write makes redundant; dropped once it shows up. */
 const ownToast: { prefix: string | null; untilMs: number } = { prefix: null, untilMs: 0 }
@@ -286,6 +290,35 @@ async function ciToClaude($: EngineInterface): Promise<string> {
   return message
 }
 
+/**
+ * Re-runs only the failed jobs of the failed Actions runs of the head commit. No
+ * confirmation: it starts CI again, it changes no code and merges nothing. Never
+ * retries; the refresh afterwards shows the queued jobs.
+ */
+async function rerunFailed($: EngineInterface, live: Live | null): Promise<string> {
+  if (rerunGuard.isBusy) return 'A re-run is in progress, try again in a moment.'
+  rerunGuard.isBusy = true
+  try {
+    const snapshot = await read($, snapshotState)
+    if (snapshot.kind !== 'pr') return 'No pull request for this branch.'
+    const { pr, location, account } = snapshot
+    const runIds = rerunnableRunIds(pr)
+    if (runIds.length === 0) return 'No failed runs to re-run.'
+    const exec: Exec = (argv, init) => $.process.run(argv, init)
+    const summary = await executeRerun(exec, account.login, location, runIds)
+    const label = `PR #${pr.number}`
+    let message: string
+    if (summary.failed.length === 0) message = `${label}: re-running failed jobs in ${count(summary.ok.length, 'run', 'runs')}`
+    else if (summary.ok.length === 0) message = `${label}: could not re-run, ${summary.failed[0]?.message ?? 'gh failed'}`
+    else message = `${label}: re-running failed jobs in ${count(summary.ok.length, 'run', 'runs')}, ${summary.failed.length} failed: ${summary.failed[0]?.message ?? 'gh failed'}`
+    await $.ui.toast(message)
+    if (summary.ok.length > 0 && live !== null) void live.run('command')
+    return message
+  } finally {
+    rerunGuard.isBusy = false
+  }
+}
+
 /** The handler closures the band and pane call; each runs with the `$` of the hook that built it. */
 function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurface | undefined): Handlers {
   return {
@@ -298,6 +331,7 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
     copyUrl: () => void copyUrl($, surface),
     openUrl: url => void openUrl($, url),
     ciToClaude: () => void ciToClaude($),
+    rerunFailed: () => void rerunFailed($, live),
     requestMerge: () => void requestAction($, 'merge'),
     requestEnqueue: () => void requestAction($, 'enqueue'),
     requestDequeue: () => void requestAction($, 'dequeue'),
@@ -323,7 +357,7 @@ export const register: Register = (on, options) => {
       // a fresh session starts without a pending action either way
     }
     try {
-      await $.command.register({ name: 'pr', description: 'Show the pull request status of this branch', argumentHint: 'refresh | open | close | copy | fix | merge | queue | dequeue | auto | admin (or m | q | dq | a | x)' })
+      await $.command.register({ name: 'pr', description: 'Show the pull request status of this branch', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
     } catch {
       // the pane and band still work without the command
     }
@@ -419,6 +453,7 @@ export const register: Register = (on, options) => {
     const write = WRITE_COMMANDS[argument]
     if (write === 'auto') return { text: await requestAutoMerge($, true) }
     if (write !== undefined) return { text: await requestAction($, write, true) }
+    if (argument === 'rerun' || argument === 'rr') return { text: await rerunFailed($, live) }
     if (argument === 'fix') return { text: await ciToClaude($) }
     if (argument === 'close') {
       await closePane($)

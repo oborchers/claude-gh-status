@@ -36,6 +36,8 @@ type World = {
   /** What `gh pr merge` and the GraphQL mutations answer. */
   mergeAnswer: ReturnType<typeof done>
   mutationAnswer: ReturnType<typeof done>
+  /** What `gh run rerun` answers, per call. */
+  rerunAnswer: (argv: readonly string[]) => ReturnType<typeof done>
   filled: { text: string; mode?: string }[]
   clock: ReturnType<typeof mock.clock>
   /** How often the branch lookup (the full refresh) ran. */
@@ -58,6 +60,7 @@ function answer(world: World, argv: readonly string[]) {
     return done(0, JSON.stringify({ hosts: { 'github.com': [{ state: 'success', active: true, login: 'me' }] } }))
   }
   if (args[0] === 'auth' && args[1] === 'token') return done(0, 'tok\n')
+  if (args[0] === 'run' && args[1] === 'rerun') return world.rerunAnswer(argv)
   if (args[0] === 'run' && args[1] === 'view') return done(0, JSON.stringify(jobsRunning))
   if (args[0] === 'api' && args.includes('-i')) return done(0, 'HTTP/2.0 200 OK\netag: W/"stable"\n\n{}')
   if (args[0] === 'pr' && args[1] === 'merge') {
@@ -90,6 +93,7 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     afterMerge: null,
     mergeAnswer: done(0, 'merged\n'),
     mutationAnswer: done(0, '{"data":{}}'),
+    rerunAnswer: () => done(0),
     filled: [],
     clock: mock.clock(on, { now: NOW }),
     fullFetches: () => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$branch'))).length,
@@ -157,7 +161,7 @@ describe('session start', () => {
     const world = setup(on)
     await start($, world)
     expect(world.registered).toHaveLength(1)
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | merge | queue | dequeue | auto | admin (or m | q | dq | a | x)' })
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
     expect(world.fullFetches()).toBe(1)
   })
 
@@ -418,6 +422,8 @@ function edited(fixture: unknown, patch: Record<string, unknown>): Fixture {
 }
 
 /** Every argv that would write to GitHub: a merge or a GraphQL mutation. */
+const reruns = (world: World) => world.argvs.filter(argv => argv[0] === 'gh' && argv[1] === 'run' && argv[2] === 'rerun')
+
 const writes = (world: World) =>
   world.argvs.filter(argv => argv[0] === 'gh' && ((argv[1] === 'pr' && argv[2] === 'merge') || argv.some(arg => arg.startsWith('query=mutation'))))
 
@@ -1019,6 +1025,65 @@ describe('CI to Claude', () => {
     await start($, world)
     expect((await runPr($, 'fix')).text).toBe('No failed checks.')
     expect(world.filled).toEqual([])
+  })
+})
+
+describe('re-run failed jobs', () => {
+  test('/pr rerun and /pr rr run only the failed jobs of each failed run, once, and never merge', async ($, on) => {
+    const world = setup(on, prFailing)
+    await start($, world)
+    for (const argument of ['rerun', 'rr']) {
+      const before = reruns(world).length
+      const ran = await runPr($, argument)
+      await world.clock.settle()
+      expect(ran.text).toMatch(/^PR #14640: re-running failed jobs in \d+ runs?$/)
+      const fresh = reruns(world).slice(before)
+      expect(fresh.length).toBeGreaterThan(0)
+      for (const argv of fresh) {
+        expect(argv).toEqual(['gh', 'run', 'rerun', argv[3], '--failed', '-R', 'cli/cli'])
+        expect(argv[3]).toMatch(/^\d+$/)
+      }
+      expect(new Set(fresh.map(argv => argv[3])).size).toBe(fresh.length)
+    }
+    expect(world.toasts.some(text => text.startsWith('PR #14640: re-running failed jobs in'))).toBe(true)
+    expect(world.argvs.some(argv => argv.includes('merge'))).toBe(false)
+    expect(writes(world)).toEqual([])
+    expect(world.opened).toEqual([])
+  })
+
+  test('says so and runs nothing when no run can be re-run', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    expect((await runPr($, 'rerun')).text).toBe('No failed runs to re-run.')
+    expect(reruns(world)).toEqual([])
+  })
+
+  test('a gh failure is reported with its message', async ($, on) => {
+    const world = setup(on, prFailing)
+    world.rerunAnswer = () => done(1, '', 'HTTP 403: Must have admin rights to Repository.\n')
+    await start($, world)
+    const ran = await runPr($, 'rr')
+    await world.clock.settle()
+    expect(ran.text).toBe('PR #14640: could not re-run, HTTP 403: Must have admin rights to Repository.')
+    expect(world.toasts).toContain(ran.text)
+  })
+
+  test('the pane button does the same, and a press during a re-run is dropped', async ($, on) => {
+    const world = setup(on, prFailing)
+    await start($, world)
+    const pane = await showPane($)
+    const first = pane.press({ key: 'rerun-failed' })
+    const second = await runPr($, 'rerun')
+    await first
+    await world.clock.settle()
+    expect(second.text).toContain('in progress')
+    const afterFirst = reruns(world).length
+    expect(afterFirst).toBeGreaterThan(0)
+    // the guard is released afterwards
+    await pane.press({ key: 'rerun-failed' })
+    await world.clock.settle()
+    expect(reruns(world).length).toBe(afterFirst * 2)
+    await pane.unmount()
   })
 })
 

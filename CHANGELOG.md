@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
 - Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments (by creation or edit time) is shown, so a review bot that updates an older comment in place surfaces.
 - The fast check also watches `pulls/{n}/comments`, so review comment edits trigger a refresh. Edits are only seen within the first 100 comments of a list (GitHub lists oldest first).
 

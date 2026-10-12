@@ -2,7 +2,7 @@
 
 import type { RenderElement } from 'claude-code'
 
-import { availableActions } from '../actions'
+import { availableActions, rerunnableRunIds } from '../actions'
 import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
 import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
 import { cellWidth, count, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart } from './format'
@@ -216,6 +216,8 @@ function mergeSection(table: UiTable, view: View, handlers: Handlers, snapshot: 
   add('copy', 'c', 'copy url', () => handlers.copyUrl())
   add('refresh', 'r', 'refresh', () => handlers.refresh())
   if (ciToClaude !== undefined && status.pipeline.failed > 0) add('fix-ci', 'f', 'fix ci', () => ciToClaude())
+  const rerunFailed = handlers.rerunFailed
+  if (rerunFailed !== undefined && rerunnableRunIds(pr).length > 0) add('rerun-failed', 't', 'retry failed', () => rerunFailed())
   rows.push(
     <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
       {buttons}
@@ -465,6 +467,7 @@ function buttonRowCount(view: View, pr: PullRequest, status: Status): number {
   if (actions.includes('auto-merge-off')) labels.push('a auto-merge off')
   if (actions.includes('admin-merge')) labels.push('x admin merge')
   if (status.pipeline.failed > 0) labels.push('f fix ci')
+  if (rerunnableRunIds(pr).length > 0) labels.push('t retry failed')
   let rows = 1
   let used = 0
   for (const label of labels) {
