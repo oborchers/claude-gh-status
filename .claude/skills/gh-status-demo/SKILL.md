@@ -30,6 +30,12 @@ If the demo workflow is not on `main` yet, base the branch and the pull request 
 
 Use the account that owns the repository. If `gh` is logged in with several accounts, run the `gh` commands with `GH_TOKEN=$(gh auth token -u <owner-login>)` instead of switching the global account.
 
+### Demo pull requests for the list
+
+The list needs several pull requests. Create a few more branches the same way, all named `demo/*`, each with its own file under `demo/` and its own pull request, and make one of them a draft (`gh pr create --draft`). Add labels (create them with `gh label create`, then `gh pr edit <n> --add-label <name>`) so the label colors show.
+
+The demo pipeline fails only on `demo/checkout-flow` and `demo/invoice-rounding`; all other `demo/*` branches pass. That gives passing, running and failing rows in one list. Shortly before the screenshot, push an empty commit to one passing branch (`git commit --allow-empty -m "chore: rerun" && git push`) so that its row shows as running.
+
 ## 2. Add a comment and an unresolved thread
 
 Comments are posted as the person. Show them the exact texts first and post only after they approve. Suggested texts:
@@ -79,11 +85,13 @@ Timing after the push (the demo jobs sleep):
 - 2:30 to 5:00: E2E jobs run with their steps while the integration job is red. Best moment for the full picture.
 - after about 5:30: everything settled, pipeline failed.
 
-Take three views:
+Take five views:
 
 1. Tab view: terminal about 147x41 cells, `/pr` docked on the right, band above the prompt.
 2. Compact view: terminal about 100 columns, `/pr` inline above the prompt.
 3. Band: a single-row crop of the band.
+4. List view (`docs/images/list-view.png`): `/pr list`, with the demo pull requests above, a draft among them and labels set.
+5. Selected view (`docs/images/selected-view.png`): pick a row in the list; the pane shows `(selected)` and `b: back`.
 
 Method (herdr, headless Playwright, no OS screenshots):
 
