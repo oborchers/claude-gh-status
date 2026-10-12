@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A GitHub outage no longer replaces the band and pane with `gh-status: gh: HTTP 504` and waits two minutes. HTTP 500, 502, 503 and 504 and answers that are not JSON (an HTML error page) count as temporary problems. With a pull request on screen it stays, marked `GitHub unavailable (504), retrying` in the band and `showing last data from 2 min ago, GitHub unavailable (504), retrying in 15 s` in the pane. Without earlier data the line reads `GitHub is having trouble (504), retrying in 15 s`. Temporary failures are retried after 15 s, 30 s, then every 60 s, and the wait resets after the first success.
+- A write that ends in a 5xx is reported as possibly applied, like a timeout.
+
 ## [0.1.0] - 2026-10-12
 
 First release.

@@ -270,7 +270,7 @@ function successMessage(pending: PendingAction): string {
 
 /** True when a failed run may still have reached GitHub: no clear refusal came back. */
 function isResultUnknown(ran: Extract<GhResult, { isOk: false }>): boolean {
-  if (ran.kind === 'timeout' || ran.kind === 'network') return true
+  if (ran.kind === 'timeout' || ran.kind === 'network' || ran.kind === 'server') return true
   return ran.kind === 'failed' && ran.exitCode === null
 }
 

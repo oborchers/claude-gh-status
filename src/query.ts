@@ -431,6 +431,11 @@ function failed(message: string): Extract<GhResult, { isOk: false }> {
   return { isOk: false, kind: 'failed', exitCode: null, message, stdout: '' }
 }
 
+/** An answer that is not JSON (an HTML error page, a cut-off body) is GitHub's fault, so it is retried. */
+function unreadable(): Extract<GhResult, { isOk: false }> {
+  return { isOk: false, kind: 'server', exitCode: null, message: 'GitHub sent an unreadable answer', stdout: '' }
+}
+
 /** Parses gh's stdout as JSON; null when it is not valid JSON. */
 function parseJson(text: string): unknown {
   try {
@@ -460,7 +465,7 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const listRan = await runGh(exec, ['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${repo}`, '-f', `branch=${branch}`], { login, cwd: location.cwd })
   if (!listRan.isOk) return { kind: 'error', failure: listRan }
   const list = parseJson(listRan.stdout)
-  if (list === null) return { kind: 'error', failure: failed('gh returned unreadable JSON') }
+  if (list === null) return { kind: 'error', failure: unreadable() }
   const listError = graphqlMessage(list)
   if (listError !== null) return { kind: 'error', failure: failed(listError) }
 
@@ -470,7 +475,7 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const detailRan = await runGh(exec, ['api', 'graphql', '-f', `query=${PR_DETAIL_QUERY}`, '-f', `id=${chosen.id}`], { login, cwd: location.cwd })
   if (!detailRan.isOk) return { kind: 'error', failure: detailRan }
   const detail = parseJson(detailRan.stdout)
-  if (detail === null) return { kind: 'error', failure: failed('gh returned unreadable JSON') }
+  if (detail === null) return { kind: 'error', failure: unreadable() }
   const detailError = graphqlMessage(detail)
   if (detailError !== null) return { kind: 'error', failure: failed(detailError) }
   return { kind: 'ok', ...normalize({ list, detail }, location) }

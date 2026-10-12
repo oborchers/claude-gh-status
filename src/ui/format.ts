@@ -1,7 +1,7 @@
 // Pure text helpers for the band and pane: cell widths, truncation, fitting
 // segments into a line, and the one-line explanation of a snapshot with no PR.
 
-import type { PullRequest, Snapshot, Status } from '../model'
+import type { Problem, PullRequest, Snapshot, Status } from '../model'
 import { prBadge } from '../status'
 
 /** Terminal cells one code point takes: 0 for marks and joiners, 2 for wide glyphs and emoji. */
@@ -101,8 +101,29 @@ export function count(value: number, one: string, many: string): string {
   return `${value} ${value === 1 ? one : many}`
 }
 
-/** What the band or pane says for a snapshot that holds no pull request; null: say nothing. */
-export function snapshotLine(snapshot: Snapshot, scope: 'band' | 'pane'): { text: string; isDim: boolean } | null {
+/** `GitHub unavailable (504)`. */
+export function unavailableText(problem: Problem): string {
+  return `GitHub unavailable (${problem.reason})`
+}
+
+/** `GitHub unavailable (504), retrying`: the band's hint next to stale data. */
+export function unavailableHint(problem: Problem): string {
+  return `${unavailableText(problem)}, retrying`
+}
+
+/** `retrying in 15 s` counted from the last attempt; just `retrying` once the wait is over. */
+export function retryText(problem: Problem, nowMs: number): string {
+  const tried = Date.parse(problem.triedAt)
+  const remaining = Number.isNaN(tried) ? problem.retryInMs : tried + problem.retryInMs - nowMs
+  const secondsLeft = Math.ceil(remaining / 1000)
+  return secondsLeft > 0 ? `retrying in ${secondsLeft} s` : 'retrying'
+}
+
+/**
+ * What the band or pane says for a snapshot that holds no pull request; null: say nothing.
+ * `nowMs` counts the retry wait of a transient error down; without it the full wait shows.
+ */
+export function snapshotLine(snapshot: Snapshot, scope: 'band' | 'pane', nowMs = Number.NaN): { text: string; isDim: boolean } | null {
   switch (snapshot.kind) {
     case 'loading':
       return scope === 'pane' ? { text: 'Loading pull request status…', isDim: true } : null
@@ -122,8 +143,11 @@ export function snapshotLine(snapshot: Snapshot, scope: 'band' | 'pane'): { text
     }
     case 'no-pr':
       return { text: `no PR for ${snapshot.location.branch ?? 'this branch'}`, isDim: true }
-    case 'error':
+    case 'error': {
+      const { problem } = snapshot
+      if (problem !== undefined) return { text: `GitHub is having trouble (${problem.reason}), ${retryText(problem, Number.isNaN(nowMs) ? Date.parse(problem.triedAt) : nowMs)}`, isDim: true }
       return { text: `gh-status: ${snapshot.message}`, isDim: true }
+    }
     case 'pr':
       return null
   }

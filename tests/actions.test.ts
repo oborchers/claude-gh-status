@@ -461,6 +461,7 @@ describe('execute', () => {
     expect(await run(throwing('process timed out'))).toMatchObject({ isOk: false, isUnknown: true })
     expect(await run(throwing('something odd'))).toMatchObject({ isOk: false, isUnknown: true })
     expect(await run(failing('error connecting: could not resolve host'))).toMatchObject({ isOk: false, isUnknown: true })
+    expect(await run(failing('gh: HTTP 504'))).toMatchObject({ isOk: false, isUnknown: true })
     expect((await run(failing('GraphQL: Pull request is not mergeable'))).isUnknown).toBeUndefined()
     expect((await run(failing('HTTP 401: Bad credentials'))).isUnknown).toBeUndefined()
   })

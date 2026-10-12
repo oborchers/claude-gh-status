@@ -5,7 +5,7 @@ import type { RenderElement } from 'claude-code'
 import { availableActions, rerunnableRunIds } from '../actions'
 import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
 import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
-import { cellWidth, count, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart } from './format'
+import { cellWidth, count, headingLine, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
@@ -373,6 +373,19 @@ function conversationSection(table: UiTable, view: View, handlers: Handlers, pr:
   return rows
 }
 
+/** The one line under the header while the data is stale: its age, what is wrong, when the next try comes. */
+function staleRows(table: UiTable, view: View, snapshot: Pr): RenderElement[] {
+  const { Text } = table
+  const { stale } = snapshot
+  if (!stale) return []
+  const text = `showing last data from ${relativeTime(snapshot.at, view.nowMs)}, ${unavailableText(stale)}, ${retryText(stale, view.nowMs)}`
+  return [
+    <Text color={view.palette.pending} wrap="truncate-end">
+      {truncate(text, view.columns)}
+    </Text>,
+  ]
+}
+
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
   const { Box, Text } = table
   const { pr, account } = snapshot
@@ -399,6 +412,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
     <Text dimColor wrap="truncate-end">
       {truncate(`${shortSha(pr.headOid)} · refreshed ${relativeTime(snapshot.at, view.nowMs)}`, columns)}
     </Text>,
+    ...staleRows(table, view, snapshot),
   ]
 }
 
@@ -408,7 +422,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
   const { snapshot, status } = view
 
   if (snapshot.kind !== 'pr' || status === null) {
-    const line = snapshotLine(snapshot, 'pane')
+    const line = snapshotLine(snapshot, 'pane', view.nowMs)
     const text = line?.text ?? 'No pull request status yet.'
     return (
       <Box flexDirection="column">
@@ -513,13 +527,13 @@ function conversationRowCount(pr: PullRequest, status: Status): number {
 export function paneRowCount(view: View): number {
   const { snapshot, status } = view
   if (snapshot.kind !== 'pr' || status === null) {
-    const text = snapshotLine(snapshot, 'pane')?.text ?? 'No pull request status yet.'
+    const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
     const wrapped = Math.max(1, Math.ceil(cellWidth(text) / Math.max(1, view.columns)))
     return Math.max(MIN_PANE_ROWS, wrapped + 1)
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS,
+    HEADER_ROWS + (snapshot.stale ? 1 : 0),
     mergeRowCount(view, pr, status),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),

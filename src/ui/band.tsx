@@ -6,7 +6,7 @@ import type { RenderElement } from 'claude-code'
 import type { PendingAction, PipelineSummary, PullRequest, Snapshot, Status } from '../model'
 import { availableActions, rerunnableRunIds } from '../actions'
 import { formatDuration, mergeTone, nonCheckBlockers, prBadge, queueLine, verdictText } from '../status'
-import { cellWidth, fitSegments, repeatsBadge, snapshotLine, truncate } from './format'
+import { cellWidth, fitSegments, repeatsBadge, snapshotLine, truncate, unavailableHint } from './format'
 import type { Fittable } from './format'
 import { prAnchor } from './anchor'
 import { confirmButton } from './confirm'
@@ -190,6 +190,9 @@ function prBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extrac
   if (reviews.length > 0) segments.push({ key: 'reviews', runs: reviews, priority: 4, width: runWidth(reviews) })
   const threads = threadRun(status)
   if (threads !== null) segments.push({ key: 'threads', runs: [threads], priority: 5, width: cellWidth(threads.text) })
+  // Stale data: the hint goes right before the account and is dropped right after it.
+  const hint: Run | null = snapshot.stale ? { text: unavailableHint(snapshot.stale), color: 'pending' } : null
+  if (hint !== null) segments.push({ key: 'hint', runs: [hint], priority: 5.5, width: cellWidth(hint.text) })
   const account: Run = { text: truncate(`@${snapshot.account.login}`, ACCOUNT_MAX), isDim: true }
   segments.push({ key: 'account', runs: [account], priority: 6, width: cellWidth(account.text) })
 
@@ -308,7 +311,7 @@ export function renderBand(table: UiTable, view: View, handlers: Handlers): Rend
     return prBand(table, view, handlers, snapshot, status)
   }
 
-  const line = snapshotLine(snapshot, 'band')
+  const line = snapshotLine(snapshot, 'band', view.nowMs)
   if (line === null) return null
   if (snapshot.kind === 'no-pr') {
     const account = `@${snapshot.account.login}`

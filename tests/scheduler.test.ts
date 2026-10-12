@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { AccountChoice, AccountFailure, JobDetail, RateLimit, RepoLocation, Snapshot } from '../src/model'
+import type { AccountChoice, AccountFailure, JobDetail, Problem, RateLimit, RepoLocation, Snapshot } from '../src/model'
 import type { FastCheckResult } from '../src/etag'
 import type { FetchedPullRequest } from '../src/query'
-import { createRefresher, isFullRefreshDue, nextDelayMs } from '../src/scheduler'
+import { backoffMs, createRefresher, isFullRefreshDue, nextDelayMs } from '../src/scheduler'
 import type { RefresherDeps, StatePatch, StateView } from '../src/scheduler'
 import { makeCheck, makeLocation, makePr, makeSnapshot } from './fixtures/pr-builder'
 
@@ -69,6 +69,35 @@ describe('nextDelayMs', () => {
     expect(nextDelayMs(makeSnapshot(makePr()), null, { fastIntervalSeconds: 2, idleIntervalSeconds: Number.NaN })).toBe(30_000)
   })
 })
+
+describe('backoff', () => {
+  test('15 s, 30 s, then 60 s as the cap', () => {
+    const steps: number[] = []
+    let previous: number | null = null
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      previous = backoffMs(previous)
+      steps.push(previous)
+    }
+    expect(steps).toEqual([15_000, 30_000, 60_000, 60_000, 60_000])
+  })
+
+  test('nextDelayMs follows the marker of a stale pull request or an error', () => {
+    const problem = (retryInMs: number) => ({ reason: '504', since: '', triedAt: '', retryInMs })
+    const location = makeLocation()
+    expect(delayOf(withStale(makeSnapshot(makePr({ checks: [makeCheck({ state: 'running' })] })), problem(15_000)))).toBe(15_000)
+    expect(delayOf(withStale(makeSnapshot(makePr()), problem(30_000)))).toBe(30_000)
+    expect(delayOf({ kind: 'error', at: '', message: 'x', location, problem: problem(60_000) })).toBe(60_000)
+    expect(delayOf(withStale(makeSnapshot(makePr()), null))).toBe(30_000)
+  })
+
+  test('a low rate limit still raises a short backoff', () => {
+    const snapshot = withStale(makeSnapshot(makePr()), { reason: '504', since: '', triedAt: '', retryInMs: 15_000 })
+    expect(nextDelayMs(snapshot, LOW_RATE, config)).toBe(60_000)
+  })
+})
+
+const withStale = (snapshot: Snapshot, stale: Problem | null): Snapshot => (snapshot.kind === 'pr' ? { ...snapshot, stale } : snapshot)
+const delayOf = (snapshot: Snapshot) => nextDelayMs(snapshot, OK_RATE, config)
 
 describe('isFullRefreshDue', () => {
   test('due after a minute, never before, and when there was none', () => {
@@ -163,7 +192,7 @@ async function settle(): Promise<void> {
   for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
 }
 const fetchOf = (pr: ReturnType<typeof makePr> | null, rateLimit: RateLimit | null = OK_RATE): (() => Promise<FetchedPullRequest>) => async () => ({ kind: 'ok', pr, rateLimit })
-const failWith = (kind: 'network' | 'timeout' | 'rate-limited' | 'not-found' | 'auth' | 'failed' | 'gh-missing', message = `${kind} failure`): (() => Promise<FetchedPullRequest>) => async () => ({
+const failWith = (kind: 'network' | 'timeout' | 'rate-limited' | 'server' | 'not-found' | 'auth' | 'failed' | 'gh-missing', message = `${kind} failure`): (() => Promise<FetchedPullRequest>) => async () => ({
   kind: 'error',
   failure: { isOk: false, kind, exitCode: 1, message, stdout: '' },
 })
@@ -318,16 +347,86 @@ describe('createRefresher: fast check path', () => {
 })
 
 describe('createRefresher: failures', () => {
-  test('a transient error keeps the last pull request visible', async () => {
-    for (const kind of ['network', 'timeout', 'rate-limited'] as const) {
+  test('a transient error keeps the last pull request visible and marks it stale', async () => {
+    for (const kind of ['network', 'timeout', 'rate-limited', 'server'] as const) {
       const world = fakes()
       const refresher = createRefresher(world.deps)
       await refresher.refresh('start')
       const before = world.state.snapshot
       world.setFetch(failWith(kind))
       await refresher.refresh('push')
-      expect(world.state.snapshot).toBe(before)
+      expect(world.state.snapshot).toMatchObject({ kind: 'pr', at: (before as { at: string }).at })
+      expect((world.state.snapshot as { pr: unknown }).pr).toBe((before as { pr: unknown }).pr)
+      expect(world.state.snapshot).toMatchObject({ stale: { retryInMs: 15_000, since: new Date(NOW).toISOString() } })
     }
+  })
+
+  test('a 504 is labelled by its status, an unreadable answer as a bad response', async () => {
+    const world = fakes()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.setFetch(failWith('server', 'gh: HTTP 504'))
+    await refresher.refresh('push')
+    expect(world.state.snapshot).toMatchObject({ stale: { reason: '504' } })
+    world.setFetch(failWith('server', 'GitHub sent an unreadable answer'))
+    await refresher.refresh('push')
+    expect(world.state.snapshot).toMatchObject({ stale: { reason: 'bad response' } })
+  })
+
+  test('failures in a row back off 15, 30, 60, 60 s and a success resets it', async () => {
+    const world = fakes()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.setFetch(failWith('server', 'gh: HTTP 504'))
+    const waits: number[] = []
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      world.setNow(NOW + (attempt + 1) * 20_000)
+      await refresher.refresh('push')
+      waits.push(delayOf(world.state.snapshot))
+    }
+    expect(waits).toEqual([15_000, 30_000, 60_000, 60_000])
+    expect(world.state.snapshot).toMatchObject({ stale: { since: new Date(NOW + 20_000).toISOString(), triedAt: new Date(NOW + 80_000).toISOString() } })
+    world.setFetch(fetchOf(makePr()))
+    world.setNow(NOW + 200_000)
+    await refresher.refresh('push')
+    expect((world.state.snapshot as { stale?: unknown }).stale).toBeUndefined()
+    world.setFetch(failWith('server', 'gh: HTTP 502'))
+    await refresher.refresh('push')
+    expect(delayOf(world.state.snapshot)).toBe(15_000)
+  })
+
+  test('a fast check that sees nothing changed clears the marker', async () => {
+    const world = fakes()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.setFetch(failWith('server', 'gh: HTTP 504'))
+    await refresher.refresh('push')
+    expect(world.state.snapshot).toMatchObject({ stale: { reason: '504' } })
+    world.setNow(NOW + 5000)
+    await refresher.refresh('timer')
+    expect((world.state.snapshot as { stale?: unknown }).stale).toBeUndefined()
+  })
+
+  test('a server error without earlier data is an error snapshot with the marker and the same backoff', async () => {
+    const world = fakes()
+    world.setFetch(failWith('server', 'gh: HTTP 504'))
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    expect(world.state.snapshot).toMatchObject({ kind: 'error', message: 'gh: HTTP 504', problem: { reason: '504', retryInMs: 15_000 } })
+    world.setNow(NOW + 20_000)
+    await refresher.refresh('timer')
+    expect(world.state.snapshot).toMatchObject({ kind: 'error', problem: { retryInMs: 30_000, since: new Date(NOW).toISOString() } })
+    expect(delayOf(world.state.snapshot)).toBe(30_000)
+  })
+
+  test('a transient error on another branch does not keep the old pull request', async () => {
+    const world = fakes()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.setLocation(makeLocation({ branch: 'other' }))
+    world.setFetch(failWith('server', 'gh: HTTP 504'))
+    await refresher.refresh('cwd')
+    expect(world.state.snapshot.kind).toBe('error')
   })
 
   test('a rate limit failure raises the delay by recording an empty budget', async () => {
@@ -343,7 +442,7 @@ describe('createRefresher: failures', () => {
     const world = fakes()
     world.setFetch(failWith('network', 'could not connect'))
     await createRefresher(world.deps).refresh('start')
-    expect(world.state.snapshot).toMatchObject({ kind: 'error', message: 'could not connect' })
+    expect(world.state.snapshot).toMatchObject({ kind: 'error', message: 'could not connect', problem: { reason: 'network' } })
   })
 
   test('a lasting error replaces the pull request', async () => {

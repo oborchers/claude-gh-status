@@ -2,7 +2,7 @@
 // looking. Pure logic: every outside effect (git, gh, $.state, toasts, time)
 // arrives as an injected function, built in register.tsx.
 
-import type { AccountChoice, AccountFailure, JobDetail, PullRequest, RateLimit, RepoLocation, Snapshot } from './model'
+import type { AccountChoice, AccountFailure, JobDetail, Problem, PullRequest, RateLimit, RepoLocation, Snapshot } from './model'
 import type { FastCheckResult, FastTarget } from './etag'
 import type { FetchedPullRequest } from './query'
 import { transitions } from './status'
@@ -14,6 +14,8 @@ const SLOW_SECONDS = 120
 const LOW_RATE_SECONDS = 60
 const LOW_RATE_REMAINING = 500
 const FULL_REFRESH_MS = 60_000
+/** Waits after the 1st, 2nd and later transient failures in a row. */
+const BACKOFF_MS = [15_000, 30_000, 60_000] as const
 
 /** Check states that keep the fast interval going. */
 const RUNNING_STATES = new Set(['queued', 'running'])
@@ -32,10 +34,33 @@ function seconds(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
+/** The wait after a transient failure, given the wait after the one before (null: this is the first). */
+export function backoffMs(previousMs: number | null): number {
+  const index = previousMs === null ? -1 : BACKOFF_MS.findIndex(step => step >= previousMs)
+  return BACKOFF_MS[Math.min(index + 1, BACKOFF_MS.length - 1)] ?? BACKOFF_MS[0]
+}
+
+/** The transient failure a snapshot is retrying, if any. */
+export function problemOf(snapshot: Snapshot): Problem | null {
+  if (snapshot.kind === 'pr') return snapshot.stale ?? null
+  if (snapshot.kind === 'error') return snapshot.problem ?? null
+  return null
+}
+
+/** Short label of a transient failure for the hint: `504`, `network`, ... */
+function reasonOf(failure: { kind: string; message: string }): string {
+  if (failure.kind === 'server') return /\b50\d\b/.exec(failure.message)?.[0] ?? 'bad response'
+  if (failure.kind === 'rate-limited') return 'rate limit'
+  return failure.kind
+}
+
 /** Milliseconds until the next timer refresh. */
 export function nextDelayMs(snapshot: Snapshot, rateLimit: RateLimit | null, config: Pick<SchedulerConfig, 'fastIntervalSeconds' | 'idleIntervalSeconds'>): number {
   let delay = SLOW_SECONDS
-  if (snapshot.kind === 'pr' && snapshot.pr.state === 'open') {
+  const problem = problemOf(snapshot)
+  if (problem !== null) {
+    delay = problem.retryInMs / SECOND_MS
+  } else if (snapshot.kind === 'pr' && snapshot.pr.state === 'open') {
     const queueChecks = snapshot.pr.mergeQueueEntry?.checks ?? []
     const isBusy = snapshot.pr.isInMergeQueue || [...snapshot.pr.checks, ...queueChecks].some(check => RUNNING_STATES.has(check.state))
     delay = isBusy ? seconds(config.fastIntervalSeconds, DEFAULT_FAST_SECONDS) : seconds(config.idleIntervalSeconds, DEFAULT_IDLE_SECONDS)
@@ -95,7 +120,7 @@ function repoKey(location: RepoLocation): string {
 }
 
 function isTransient(kind: string): boolean {
-  return kind === 'network' || kind === 'timeout' || kind === 'rate-limited'
+  return kind === 'network' || kind === 'timeout' || kind === 'rate-limited' || kind === 'server'
 }
 
 function runIdsOf(pr: PullRequest): number[] {
@@ -146,7 +171,8 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         const fast = await deps.fastCheck(location, account.login, target, etags)
         etags = fast.etags
         if (!fast.isChanged && !fast.isFailed) {
-          const same: Snapshot = { ...prevPr, at, location, account }
+          const { stale: _stale, ...fresh } = prevPr
+          const same: Snapshot = { ...fresh, at, location, account }
           return await publish(state, same, account.login, { etags })
         }
         seeded = { headOid: target.headOid, etags: fast.etags }
@@ -157,10 +183,12 @@ export function createRefresher(deps: RefresherDeps): Refresher {
         const failure = fetched.failure
         if (failure.kind === 'not-found' || failure.kind === 'auth') accounts.delete(key)
         const extra: StatePatch = failure.kind === 'rate-limited' ? { rateLimit: { remaining: 0, resetAt: at } } : {}
-        if (isTransient(failure.kind) && prev.kind === 'pr') {
-          // keep the last good picture; the next tick tries again
-          if (extra.rateLimit !== undefined) await deps.writeState(extra)
-          return
+        if (isTransient(failure.kind)) {
+          const earlier = problemOf(prev)
+          const problem: Problem = { reason: reasonOf(failure), since: earlier?.since ?? at, triedAt: at, retryInMs: backoffMs(earlier?.retryInMs ?? null) }
+          // keep the last good picture and mark it stale; the next try comes after the backoff
+          if (prevPr !== null) return await deps.writeState({ ...extra, snapshot: { ...prevPr, stale: problem } })
+          return await publish(state, { kind: 'error', at, message: failure.message, location, problem }, null, extra)
         }
         const message = failure.kind === 'gh-missing' ? 'gh is not installed' : failure.message
         return await publish(state, { kind: 'error', at, message, location }, null, extra)

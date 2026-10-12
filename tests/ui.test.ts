@@ -157,6 +157,100 @@ describe('snapshotLine', () => {
   })
 })
 
+describe('transient problem text', () => {
+  const location = makeLocation()
+  const at = '2026-01-01T00:09:00Z'
+  const problem = { reason: '504', since: at, triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 }
+
+  test('an error without earlier data reads as trouble with a countdown', () => {
+    const snapshot: Snapshot = { kind: 'error', at, message: 'gh: HTTP 504', location, problem }
+    expect(snapshotLine(snapshot, 'pane')?.text).toBe('GitHub is having trouble (504), retrying in 15 s')
+    expect(snapshotLine(snapshot, 'band', NOW)?.text).toBe('GitHub is having trouble (504), retrying in 5 s')
+    expect(snapshotLine(snapshot, 'band', NOW + 20_000)?.text).toBe('GitHub is having trouble (504), retrying')
+    expect(snapshotLine(snapshot, 'band')?.text).not.toContain('gh: HTTP 504')
+  })
+
+  test('an error without a marker keeps the raw message', () => {
+    expect(snapshotLine({ kind: 'error', at, message: 'GraphQL: boom', location }, 'band')?.text).toBe('gh-status: GraphQL: boom')
+  })
+})
+
+describe('stale data hint', () => {
+  const stale = { reason: '504', since: '2026-01-01T00:08:00Z', triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 }
+  const staleView = (columns: number, overrides: Partial<PullRequest> = {}): View => {
+    const base = makeSnapshot(makePr({ checks: [makeCheck()], ...overrides }))
+    const snapshot: Snapshot = base.kind === 'pr' ? { ...base, at: '2026-01-01T00:08:00Z', stale } : base
+    return viewFor(snapshot, columns)
+  }
+
+  test('the band shows the hint before the account on every surface', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const ui = await rig.band($, surface, staleView(120), handlersFor([]))
+      const text = await textOf(ui)
+      expect(text).toContain('GitHub unavailable (504), retrying')
+      expect(text.indexOf('GitHub unavailable')).toBeLessThan(text.indexOf('@me'))
+      await ui.unmount()
+    }
+  })
+
+  test('the band without a marker has no hint', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.band($, 'terminal', prView({ checks: [makeCheck()] }, 120), handlersFor([]))
+    expect(await textOf(ui)).not.toContain('GitHub unavailable')
+  })
+
+  test('the band drops the account first, then the hint, and fits the width', async ($, on) => {
+    const rig = createRig(on)
+    const seen: { hasHint: boolean; hasAccount: boolean }[] = []
+    for (const columns of [120, 90, 70, 60, 50, 40, 30]) {
+      const ui = await rig.band($, 'terminal', staleView(columns), handlersFor([]))
+      const text = await textOf(ui)
+      for (const row of text.split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      seen.push({ hasHint: text.includes('GitHub unavailable'), hasAccount: text.includes('@me') })
+      await ui.unmount()
+    }
+    expect(seen[0]).toEqual({ hasHint: true, hasAccount: true })
+    for (const entry of seen) if (entry.hasAccount) expect(entry.hasHint).toBe(true)
+    expect(seen.at(-1)?.hasHint).toBe(false)
+  })
+
+  test('the pane says how old the data is, what is wrong and when it retries', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const ui = await rig.pane($, surface, staleView(100), handlersFor([]))
+      const text = await textOf(ui)
+      expect(text).toContain('showing last data from 2 min ago, GitHub unavailable (504), retrying in 5 s')
+      await ui.unmount()
+    }
+  })
+
+  test('the pane line is one row under the header, counted in the height, and fits narrow widths', async ($, on) => {
+    const rig = createRig(on)
+    const withMarker = staleView(40)
+    expect(paneRowCount(withMarker)).toBeGreaterThanOrEqual(paneRowCount(prView({ checks: [makeCheck()] }, 40)))
+    const ui = await rig.pane($, 'terminal', withMarker, handlersFor([]))
+    const rows = (await textOf(ui)).split('\n')
+    const at = rows.findIndex((row) => row.startsWith('showing last data'))
+    expect(at).toBeGreaterThan(0)
+    expect(rows[at - 1]).toContain('refreshed')
+    for (const row of rows) expect(cellWidth(row)).toBeLessThanOrEqual(40)
+  })
+
+  test('the no-data error draws the friendly line in band and pane', async ($, on) => {
+    const rig = createRig(on)
+    const error: Snapshot = { kind: 'error', at: '2026-01-01T00:09:50Z', message: 'gh: HTTP 504', location: makeLocation(), problem: { reason: '504', since: '2026-01-01T00:09:50Z', triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 } }
+    for (const surface of SURFACES) {
+      const band = await rig.band($, surface, viewFor(error, 80), handlersFor([]))
+      expect(await textOf(band)).toBe('GitHub is having trouble (504), retrying in 5 s')
+      const pane = await rig.pane($, surface, viewFor(error, 80), handlersFor([]))
+      expect(await textOf(pane)).toContain('GitHub is having trouble (504), retrying in 5 s')
+      await band.unmount()
+      await pane.unmount()
+    }
+  })
+})
+
 describe('sortChecks', () => {
   test('puts required first, then failed, running, queued, the rest, and drops stale', () => {
     const checks: Check[] = [
