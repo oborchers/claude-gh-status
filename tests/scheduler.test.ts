@@ -3,8 +3,8 @@ import { describe, expect, test } from 'claude-code/testing'
 import type { AccountChoice, AccountFailure, JobDetail, Problem, RateLimit, RepoLocation, Snapshot } from '../src/model'
 import type { FastCheckResult } from '../src/etag'
 import type { FetchedPullRequest } from '../src/query'
-import { backoffMs, createRefresher, isFullRefreshDue, nextDelayMs } from '../src/scheduler'
-import type { RefresherDeps, StatePatch, StateView } from '../src/scheduler'
+import { backoffMs, createRefresher, etagsOf, isFullRefreshDue, mergeEtags, nextDelayMs } from '../src/scheduler'
+import type { RefreshTarget, RefresherDeps, StatePatch, StateView } from '../src/scheduler'
 import { makeCheck, makeLocation, makePr, makeSnapshot } from './fixtures/pr-builder'
 
 const config = { fastIntervalSeconds: 5, idleIntervalSeconds: 30, toasts: true }
@@ -124,7 +124,8 @@ type Fakes = {
 
 const account: AccountChoice = { login: 'me', source: 'active' }
 
-function fakes(overrides: { toasts?: boolean } = {}): Fakes {
+function fakes(overrides: { toasts?: boolean; target?: RefreshTarget } = {}): Fakes {
+  const target: RefreshTarget = overrides.target ?? 'branch'
   let nowMs = NOW
   let location: RepoLocation | null = makeLocation()
   let isPaneOpen = false
@@ -132,11 +133,12 @@ function fakes(overrides: { toasts?: boolean } = {}): Fakes {
   let resolve: () => AccountChoice | AccountFailure = () => account
   let fetchNext: () => Promise<FetchedPullRequest> = async () => ({ kind: 'ok', pr: makePr(), rateLimit: OK_RATE })
   let pending: Promise<void> | null = null
-  const state: StateView = { snapshot: { kind: 'loading', at: '' }, jobs: [], etags: {} }
+  const state: StateView = { snapshot: { kind: 'loading', at: '' }, jobs: [], etags: {}, selected: null, selectedSnapshot: null }
   const calls: string[] = []
   const toasts: string[] = []
   const writes: StatePatch[] = []
   const deps: RefresherDeps = {
+    target,
     config: { ...config, toasts: overrides.toasts ?? true },
     readCwd: async () => '/work/app',
     readLocation: async () => location,
@@ -149,6 +151,11 @@ function fakes(overrides: { toasts?: boolean } = {}): Fakes {
       if (pending !== null) await pending
       return fetchNext()
     },
+    fetchPullRequestByNumber: async (_location, _login, number) => {
+      calls.push(`fetch #${number}`)
+      if (pending !== null) await pending
+      return fetchNext()
+    },
     fastCheck: async () => {
       calls.push('fast')
       return fast
@@ -158,12 +165,14 @@ function fakes(overrides: { toasts?: boolean } = {}): Fakes {
       return runIds.map<JobDetail>(runId => ({ jobId: runId * 10, runId, name: 'build', state: 'running', currentStep: 'test', failedStep: null, url: null }))
     },
     isPaneOpen: async () => isPaneOpen,
-    readState: async () => ({ snapshot: state.snapshot, jobs: state.jobs, etags: state.etags }),
-    writeState: async patch => {
+    readState: async () => ({ snapshot: state.snapshot, jobs: state.jobs, etags: state.etags, selected: state.selected, selectedSnapshot: state.selectedSnapshot }),
+    writeState: async (patch, writer) => {
       writes.push(patch)
+      expect(writer).toBe(target)
       if (patch.snapshot !== undefined) state.snapshot = patch.snapshot
+      if (patch.selectedSnapshot !== undefined) state.selectedSnapshot = patch.selectedSnapshot
       if (patch.jobs !== undefined) state.jobs = patch.jobs
-      if (patch.etags !== undefined) state.etags = patch.etags
+      if (patch.etags !== undefined) state.etags = mergeEtags(state.etags, patch.etags, writer)
     },
     now: async () => nowMs,
     toast: text => void toasts.push(text),
@@ -555,5 +564,167 @@ describe('createRefresher: single flight', () => {
     await refresher.refresh('start')
     await refresher.refresh('push')
     expect(world.calls.filter(call => call === 'fetch')).toHaveLength(2)
+  })
+})
+
+describe('ETag scopes', () => {
+  test('the selected target keeps its keys apart from the branch target', () => {
+    const stored = { a: '"1"', 'selected:b': '"2"' }
+    expect(etagsOf(stored, 'branch')).toEqual({ a: '"1"' })
+    expect(etagsOf(stored, 'selected')).toEqual({ b: '"2"' })
+  })
+
+  test("merging replaces the writer's part and keeps the other", () => {
+    const stored = { a: '"1"', old: '"0"', 'selected:b': '"2"' }
+    expect(mergeEtags(stored, { c: '"3"' }, 'branch')).toEqual({ c: '"3"', 'selected:b': '"2"' })
+    expect(mergeEtags(stored, { d: '"4"' }, 'selected')).toEqual({ a: '"1"', old: '"0"', 'selected:d': '"4"' })
+    expect(mergeEtags(stored, {}, 'selected')).toEqual({ a: '"1"', old: '"0"' })
+  })
+})
+
+describe('createRefresher: selected target', () => {
+  const picked = makePr({ number: 7, id: 'PR_seven' })
+  const selectedWorld = (overrides: { toasts?: boolean } = {}): Fakes => {
+    const world = fakes({ ...overrides, target: 'selected' })
+    world.state.selected = { number: 7 }
+    world.state.snapshot = makeSnapshot(makePr())
+    world.setFetch(fetchOf(picked))
+    return world
+  }
+
+  test('idles while nothing is picked and drops a leftover snapshot', async () => {
+    const world = selectedWorld()
+    world.state.selected = null
+    await createRefresher(world.deps).refresh('start')
+    expect(world.calls).toEqual([])
+    expect(world.writes).toEqual([])
+    world.state.selectedSnapshot = makeSnapshot(picked)
+    await createRefresher(world.deps).refresh('push')
+    expect(world.state.selectedSnapshot).toBe(null)
+    expect(world.calls).toEqual([])
+  })
+
+  test('fetches the picked number into selectedSnapshot and leaves the band snapshot alone', async () => {
+    const world = selectedWorld()
+    const band = world.state.snapshot
+    await createRefresher(world.deps).refresh('start')
+    expect(world.calls).toContain('fetch #7')
+    expect(world.calls).not.toContain('fetch')
+    const own = world.state.selectedSnapshot
+    expect(own?.kind === 'pr' && own.pr.number).toBe(7)
+    expect(world.state.snapshot).toBe(band)
+    expect(world.writes.every(write => write.snapshot === undefined)).toBe(true)
+  })
+
+  test("the branch's own pull request is not fetched twice and leaves selectedSnapshot empty", async () => {
+    const world = selectedWorld()
+    world.state.selected = { number: 42 }
+    world.state.selectedSnapshot = makeSnapshot(picked)
+    await createRefresher(world.deps).refresh('start')
+    expect(world.calls).toEqual([])
+    expect(world.state.selectedSnapshot).toBe(null)
+  })
+
+  test('a timer fast checks the picked pull request and skips the fetch when nothing changed', async () => {
+    const world = selectedWorld()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.calls.length = 0
+    world.setNow(NOW + 10_000)
+    await refresher.refresh('timer')
+    expect(world.calls).toEqual(['fast'])
+    expect(world.state.selectedSnapshot?.at).toBe(new Date(NOW + 10_000).toISOString())
+  })
+
+  test("its ETags live under their own keys, next to the branch's", async () => {
+    const world = selectedWorld()
+    world.state.etags = { branchPath: '"b"' }
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.etags).toEqual({ branchPath: '"b"', 'selected:a': '"1"' })
+  })
+
+  test("a transient failure keeps the picked pull request and backs off like the branch's", async () => {
+    const world = selectedWorld()
+    const refresher = createRefresher(world.deps)
+    await refresher.refresh('start')
+    world.setFetch(failWith('server', 'HTTP 504'))
+    await refresher.refresh('push')
+    const stale = world.state.selectedSnapshot
+    expect(stale?.kind === 'pr' && stale.stale?.reason).toBe('504')
+    expect(stale?.kind === 'pr' && stale.stale?.retryInMs).toBe(15_000)
+    await refresher.refresh('push')
+    const again = world.state.selectedSnapshot
+    expect(again?.kind === 'pr' && again.stale?.retryInMs).toBe(30_000)
+  })
+
+  test('a number without a pull request is an error snapshot saying so', async () => {
+    const world = selectedWorld()
+    world.setFetch(fetchOf(null))
+    await createRefresher(world.deps).refresh('start')
+    const own = world.state.selectedSnapshot
+    expect(own?.kind === 'error' && own.message).toBe('PR #7 was not found')
+  })
+
+  test('works on a detached head: only the repository matters', async () => {
+    const world = selectedWorld()
+    world.setLocation(makeLocation({ branch: null }))
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.selectedSnapshot?.kind).toBe('pr')
+  })
+
+  test('a snapshot left from another pick is not carried over', async () => {
+    const world = selectedWorld()
+    world.state.selectedSnapshot = makeSnapshot(makePr({ number: 5, checks: [makeCheck({ state: 'running' })] }))
+    world.setFetch(fetchOf(makePr({ number: 7, checks: [makeCheck({ state: 'failure' })] })))
+    await createRefresher(world.deps).refresh('push')
+    expect(world.toasts).toEqual([])
+  })
+
+  test('toasts for the picked pull request, with its own number', async () => {
+    const world = selectedWorld()
+    world.state.selectedSnapshot = makeSnapshot(makePr({ number: 7, checks: [makeCheck({ state: 'running' })] }))
+    world.setFetch(fetchOf(makePr({ number: 7, checks: [makeCheck({ state: 'failure' })] })))
+    await createRefresher(world.deps).refresh('push')
+    expect(world.toasts).toEqual(['PR #7: 1 check failed'])
+  })
+
+  test('jobs follow the picked pull request while the pane is open', async () => {
+    const world = selectedWorld()
+    world.setPaneOpen(true)
+    world.setFetch(fetchOf(makePr({ number: 7, checks: [makeCheck({ state: 'running', runId: 70 })] })))
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.jobs.map(job => job.runId)).toEqual([70])
+  })
+})
+
+describe('createRefresher: branch target with a picked pull request', () => {
+  const running = makePr({ checks: [makeCheck({ state: 'running', runId: 7 })] })
+
+  test('keeps the band snapshot fresh but leaves the jobs to the picked one', async () => {
+    const world = fakes()
+    world.state.selected = { number: 7 }
+    world.state.jobs = [{ jobId: 1, runId: 70, name: 'build', state: 'running', currentStep: null, failedStep: null, url: null }]
+    world.setPaneOpen(true)
+    world.setFetch(fetchOf(running))
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.snapshot.kind).toBe('pr')
+    expect(world.calls.some(call => call.startsWith('jobs'))).toBe(false)
+    expect(world.state.jobs.map(job => job.runId)).toEqual([70])
+  })
+
+  test("fetches jobs when the pick is the branch's own pull request", async () => {
+    const world = fakes()
+    world.state.selected = { number: 42 }
+    world.setPaneOpen(true)
+    world.setFetch(fetchOf(running))
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.jobs.map(job => job.runId)).toEqual([7])
+  })
+
+  test("its ETags keep the picked pull request's keys", async () => {
+    const world = fakes()
+    world.state.etags = { 'selected:x': '"s"' }
+    await createRefresher(world.deps).refresh('start')
+    expect(world.state.etags).toEqual({ a: '"1"', 'selected:x': '"s"' })
   })
 })

@@ -13,6 +13,8 @@ type Caller = { tool: { call(input: object): Promise<unknown> } }
 /** Calls the Bash tool through a narrow type: the engine's own overloads are too deep for tsc here. */
 const bash = ($: Engine, command: string) => ($ as unknown as Caller).tool.call({ tool: 'Bash', command })
 
+type Raw = { list: unknown; detail: { data: { node: Record<string, unknown> } } }
+
 const done = (exitCode: number, stdout = '', stderr = '') => ({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
 
 type Fixture = { list: unknown; detail: unknown }
@@ -33,6 +35,8 @@ type World = {
   /** Whether the engine gave the opened pane the keyboard. */
   isFocused: boolean
   fixture: Fixture
+  /** Other open pull requests of the repository by number, served to the by-number lookup (the list's picks). */
+  others: Record<number, Fixture>
   /** When set, `gh pr merge` throws this instead of answering. */
   mergeThrows: string | null
   /** When set, the fixture becomes this once `gh pr merge` ran (the pull request shows merged). */
@@ -48,6 +52,8 @@ type World = {
   fullFetches(): number
   /** How often a conditional REST request (the fast check) ran. */
   fastRequests(): number
+  /** The by-number lookups that ran, as the numbers asked for. */
+  numberLookups(): number[]
 }
 
 function answer(world: World, argv: readonly string[]) {
@@ -75,10 +81,26 @@ function answer(world: World, argv: readonly string[]) {
     const query = args.find(arg => arg.startsWith('query=')) ?? ''
     if (query.includes('mutation')) return world.mutationAnswer
     if (query.includes('$branch')) return done(0, JSON.stringify(world.fixture.list))
-    if (query.includes('$id: ID!')) return done(0, JSON.stringify(world.fixture.detail))
+    if (query.includes('$number: Int!')) {
+      const number = Number(args.find(arg => arg.startsWith('number='))?.slice('number='.length))
+      return done(0, JSON.stringify(byNumberAnswer(world.others[number] ?? null)))
+    }
+    if (query.includes('$id: ID!')) {
+      const id = args.find(arg => arg.startsWith('id='))?.slice('id='.length)
+      const owner = [world.fixture, ...Object.values(world.others)].find(fixture => (fixture.detail as Raw['detail'] | null)?.data?.node?.id === id)
+      return done(0, JSON.stringify((owner ?? world.fixture).detail))
+    }
     return done(0, '{"data":{"repository":{"id":"R_1"}}}')
   }
   return done(1, '', 'unexpected')
+}
+
+/** What the id-by-number query answers for a fixture's pull request; no pull request when the fixture is null. */
+function byNumberAnswer(fixture: Fixture | null): unknown {
+  if (fixture === null) return { data: { repository: { isPrivate: false, pullRequest: null }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T08:02:58Z' } } }
+  const list = (fixture.list as { data: { repository: { pullRequests: { nodes: unknown[] } } & Record<string, unknown>; rateLimit: unknown } }).data
+  const { pullRequests, ...scalars } = list.repository
+  return { data: { repository: { ...scalars, isPrivate: false, pullRequest: pullRequests.nodes[0] }, rateLimit: list.rateLimit } }
 }
 
 /** Mocks the clock, the store and everything the plugin reaches through `$`. */
@@ -95,6 +117,7 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     panes: [],
     isFocused: true,
     fixture,
+    others: {},
     mergeThrows: null,
     afterMerge: null,
     mergeAnswer: done(0, 'merged\n'),
@@ -104,6 +127,10 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     clock: mock.clock(on, { now: NOW }),
     fullFetches: () => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$branch'))).length,
     fastRequests: () => world.argvs.filter(argv => argv[1] === 'api' && argv.includes('-i')).length,
+    numberLookups: () =>
+      world.argvs
+        .filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$number: Int!')))
+        .map(argv => Number(argv.find(arg => arg.startsWith('number='))?.slice('number='.length))),
   }
   mock.store(on)
   on('process.run', (_$, e) => {
@@ -172,7 +199,7 @@ describe('session start', () => {
     const world = setup(on)
     await start($, world)
     expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
     expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
@@ -539,7 +566,6 @@ describe('the /pr command', () => {
 const SETTLED_MS = 700
 const HEAD = '5f85ec828f6d2fe28d81ba71a61b8a2181edfb6a'
 
-type Raw = { list: unknown; detail: { data: { node: Record<string, unknown> } } }
 
 /** A copy of a fixture with the pull request node edited. */
 function edited(fixture: unknown, patch: Record<string, unknown>): Fixture {
@@ -1225,5 +1251,241 @@ describe('what the model can reach', () => {
     await start($, world)
     await runPr($, 'merge')
     expect(registered).toEqual([])
+  })
+})
+
+// The list's picks: any open pull request of the repository in the pane, the band on the branch's.
+
+describe('a pull request picked from the list', () => {
+  /** The branch has the blocked 14640; the repository also has the mergeable 14580. */
+  const worldWithPick = (on: On): World => {
+    const world = setup(on, prFailing)
+    world.others[14580] = prGreen
+    return world
+  }
+  const bandProps = BAND_PROPS
+  const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: bandProps })
+
+  test('/pr <number> opens the pane with the keyboard and shows that pull request, marked as selected', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    const ran = await runPr($, '14580')
+    await world.clock.settle()
+    expect(ran.text).toContain('PR #14580')
+    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
+    expect(world.numberLookups()).toContain(14580)
+    const pane = await showPane($)
+    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    expect(await pane.find({ key: 'back' })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('the band keeps the branch pull request', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    await runPr($, '14580')
+    await world.clock.settle()
+    const band = await mountBand($)
+    expect(await band.find({ type: 'Button', text: /PR #14640/ })).toBeDefined()
+    expect(await band.find({ text: /14580/ })).toBeUndefined()
+    await band.unmount()
+  })
+
+  test('before the first answer the pane says loading, never the branch pull request', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    world.others[14580] = prGreen
+    await runPr($, '14580')
+    const pane = await showPane($)
+    expect(await sees(pane, /14640/)).toBe(false)
+    await world.clock.settle()
+    expect(await sees(pane, /14580/)).toBe(true)
+    await pane.unmount()
+  })
+
+  test('a pull request that does not exist is said so in the pane', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    await runPr($, '99999')
+    await world.clock.settle()
+    const pane = await showPane($)
+    expect(await sees(pane, /PR #99999 was not found/)).toBe(true)
+    expect(await pane.find({ key: 'back' })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('back returns to the branch pull request: no marker, no back button, the pick is dropped', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    await runPr($, '14580')
+    await world.clock.settle()
+    const pane = await showPane($)
+    await pane.press({ key: 'back' })
+    await world.clock.settle()
+    expect(await sees(pane, /14640/)).toBe(true)
+    expect(await sees(pane, /\(selected\)/)).toBe(false)
+    expect(await pane.find({ key: 'back' })).toBeUndefined()
+    const lookups = world.numberLookups().length
+    await world.clock.advance(120_000)
+    expect(world.numberLookups()).toHaveLength(lookups)
+    await pane.unmount()
+  })
+
+  test('the pick is the branch pull request: shown as selected, nothing is fetched by number', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    await runPr($, '14640')
+    await world.clock.settle()
+    expect(world.numberLookups()).toEqual([])
+    const pane = await showPane($)
+    expect(await sees(pane, /PR #14640 \(selected\)/)).toBe(true)
+    await pane.unmount()
+  })
+
+  test('picking another pull request drops the confirmation of the one before', async ($, on) => {
+    const world = setup(on, prGreen)
+    world.others[14640] = prFailing
+    await start($, world)
+    await runPr($, 'merge')
+    await runPr($, '14640')
+    await world.clock.settle()
+    const pane = await showPane($)
+    expect(await isConfirming(pane)).toBe(false)
+    await world.clock.advance(SETTLED_MS)
+    const band = await mountBand($)
+    expect(await band.find({ key: 'band-confirm' })).toBeUndefined()
+    expect(writes(world)).toEqual([])
+    await band.unmount()
+    await pane.unmount()
+  })
+
+  test('/pr back and a bad number are answered', async ($, on) => {
+    const world = worldWithPick(on)
+    await start($, world)
+    expect((await runPr($, '0')).text).toContain('not a pull request number')
+    await runPr($, '14580')
+    expect((await runPr($, 'back')).text).toContain('this branch')
+    expect(world.numberLookups().filter(number => number === 0)).toEqual([])
+  })
+
+  describe('write actions bind to the pull request the pane shows', () => {
+    const merge = ['gh', 'pr', 'merge', '14580', '--squash', '--match-head-commit', HEAD, '-R', 'cli/cli']
+
+    test('a merge requested in the selected view binds its id, head and repository, and re-checks it by number', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      const ran = await runPr($, 'merge')
+      expect(ran.text).toContain('Merge cli/cli #14580')
+      const pane = await showPane($)
+      expect(await sees(pane, /Merge cli\/cli #14580 into /)).toBe(true)
+      expect(await sees(pane, /5f85ec8/)).toBe(true)
+      expect(writes(world)).toEqual([])
+      await world.clock.advance(SETTLED_MS)
+      const before = world.argvs.length
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([merge])
+      // between the press and the write: the by-number lookup of 14580 and no branch lookup
+      const writeAt = world.argvs.findIndex((argv, index) => index >= before && argv[1] === 'pr' && argv[2] === 'merge')
+      const recheck = world.argvs.slice(before, writeAt)
+      const queries = recheck.filter(argv => argv[1] === 'api').map(argv => argv.find(arg => arg.startsWith('query=')) ?? '')
+      expect(queries.some(query => query.includes('$number: Int!'))).toBe(true)
+      expect(queries.some(query => query.includes('$branch'))).toBe(false)
+      expect(recheck.some(argv => argv.includes('number=14580'))).toBe(true)
+      expect(world.toasts).toContain('PR #14580 merged')
+      await pane.unmount()
+    })
+
+    test('the selected pull request moving to a new head after the confirmation was asked: nothing is written', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'merge')
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      world.others[14580] = edited(prGreen, { headRefOid: 'ffff00000000000000000000000000000000ffff' })
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      expect(await sees(pane, /new commits since you asked to confirm/)).toBe(true)
+      await pane.unmount()
+    })
+
+    test('a number that is gone at the re-check writes nothing', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'merge')
+      const pane = await showPane($)
+      await world.clock.advance(SETTLED_MS)
+      delete world.others[14580]
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([])
+      expect(await isConfirming(pane)).toBe(true)
+      await pane.unmount()
+    })
+
+    test('a pane button asks about the selected pull request; the blocked branch pull request offers no merge', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      const plain = await showPane($)
+      expect(await plain.find({ key: 'merge' })).toBeUndefined()
+      await plain.unmount()
+      await runPr($, '14580')
+      await world.clock.settle()
+      const pane = await showPane($)
+      await pane.press({ key: 'merge' })
+      await world.clock.settle()
+      expect(await isConfirming(pane)).toBe(true)
+      await world.clock.advance(SETTLED_MS)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([merge])
+      await pane.unmount()
+    })
+
+    test('the band confirmation of the branch pull request is not shown by the selected view, and still writes the branch pull request', async ($, on) => {
+      const world = setup(on, prGreen)
+      world.others[14640] = prFailing
+      // the by-number re-check of the branch pull request finds it like the repository does
+      world.others[14580] = prGreen
+      await start($, world)
+      await runPr($, '14640')
+      await world.clock.settle()
+      const band = await mountBand($)
+      await band.press({ key: 'band-merge' })
+      await world.clock.settle()
+      expect(await band.find({ key: 'band-confirm' })).toBeDefined()
+      const pane = await showPane($)
+      expect(await isConfirming(pane)).toBe(false)
+      await world.clock.advance(SETTLED_MS)
+      await band.press({ key: 'band-confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toEqual([['gh', 'pr', 'merge', '14580', '--squash', '--match-head-commit', HEAD, '-R', 'cli/cli']])
+      await pane.unmount()
+      await band.unmount()
+    })
+
+    test('a merge in the selected view leaves the branch pull request in the band untouched', async ($, on) => {
+      const world = worldWithPick(on)
+      await start($, world)
+      await runPr($, '14580')
+      await world.clock.settle()
+      await runPr($, 'merge')
+      await world.clock.advance(SETTLED_MS)
+      const pane = await showPane($)
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      const band = await mountBand($)
+      expect(await band.find({ type: 'Button', text: /PR #14640/ })).toBeDefined()
+      expect(await band.find({ key: 'band-confirm' })).toBeUndefined()
+      await band.unmount()
+      await pane.unmount()
+    })
   })
 })

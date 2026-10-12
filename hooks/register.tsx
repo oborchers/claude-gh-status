@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandInfo, EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
-import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isTooEarly, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
+import { RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
 import { fastCheck } from '../src/etag'
 import { runGh, tokenFor } from '../src/gh'
@@ -11,9 +11,9 @@ import type { AccountMemory } from '../src/accounts'
 import { readLocation } from '../src/git'
 import { fetchJobs } from '../src/jobs'
 import type { MergeMethod, PendingAction, Snapshot } from '../src/model'
-import { fetchPullRequest } from '../src/query'
-import { createRefresher, nextDelayMs } from '../src/scheduler'
-import type { RefreshReason, Refresher, SchedulerConfig } from '../src/scheduler'
+import { fetchPullRequest, fetchPullRequestByNumber } from '../src/query'
+import { createRefresher, etagsOf, mergeEtags, nextDelayMs } from '../src/scheduler'
+import type { RefreshReason, RefreshTarget, RefresherDeps, SchedulerConfig } from '../src/scheduler'
 import { deriveStatus } from '../src/status'
 import { renderBand } from '../src/ui/band'
 import { confirmTitle } from '../src/ui/confirm'
@@ -40,7 +40,7 @@ const FALLBACK_COMMAND = 'gh-pr'
 const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
 const PLUGIN_NAME = 'gh-status'
 
-const usageFor = (name: string): string => `Usage: /${name} [refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
+const usageFor = (name: string): string => `Usage: /${name} [<number> | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
 
 /** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
 function commandNameOf(value: unknown): string {
@@ -71,6 +71,8 @@ const lastSeenState = atom({ plugin: 'gh-status', key: 'lastSeen' } as const, {}
 const etagsState = atom({ plugin: 'gh-status', key: 'etags' } as const, {})
 const pendingState = atom({ plugin: 'gh-status', key: 'pending' } as const, null)
 const outcomeState = atom({ plugin: 'gh-status', key: 'outcome' } as const, null)
+const selectedState = atom({ plugin: 'gh-status', key: 'selected' } as const, null)
+const selectedSnapshotState = atom({ plugin: 'gh-status', key: 'selectedSnapshot' } as const, null)
 
 /** One confirm press at a time: a second press while one is being handled is dropped. */
 const confirmGuard = { isBusy: false }
@@ -83,10 +85,14 @@ const ownToast: { prefix: string | null; untilMs: number } = { prefix: null, unt
 
 /** What session.start builds and the other hooks use; null until then. */
 type Live = {
-  refresher: Refresher
-  /** Refreshes, then re-arms the timer for the interval the new state asks for. */
+  /** Refreshes the branch's pull request and the picked one, then re-arms the timer for the interval the new state asks for. */
   run(reason: RefreshReason): Promise<void>
 }
+
+/** Which pull request a handler acts on: the branch's (the band) or the one the pane shows (the picked one, else the branch's). */
+type Subject = 'branch' | 'pane'
+
+type PrSnapshot = Extract<Snapshot, { kind: 'pr' }>
 
 function numberOption(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
@@ -104,15 +110,41 @@ function seenKey(snapshot: Extract<Snapshot, { kind: 'pr' }>): string {
   return `${snapshot.location.owner ?? ''}/${snapshot.location.repo ?? ''}#${snapshot.pr.number}`
 }
 
-async function readView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<View> {
-  const snapshot = await read($, snapshotState)
+/**
+ * The snapshot a subject shows. The band always shows the branch's. The pane shows
+ * the picked pull request when one is set: its own snapshot, the branch's when the
+ * pick is the branch's pull request, else a loading line until the first answer.
+ */
+async function subjectSnapshot($: EngineInterface, subject: Subject): Promise<{ snapshot: Snapshot; isSelected: boolean }> {
+  const branch = await read($, snapshotState)
+  const selected = subject === 'pane' ? await read($, selectedState) : null
+  if (selected === null) return { snapshot: branch, isSelected: false }
+  const own = await read($, selectedSnapshotState)
+  if (own !== null && (own.kind !== 'pr' || own.pr.number === selected.number)) return { snapshot: own, isSelected: true }
+  if (branch.kind === 'pr' && branch.pr.number === selected.number) return { snapshot: branch, isSelected: true }
+  return { snapshot: { kind: 'loading', at: '' }, isSelected: true }
+}
+
+/** The pull request a pending write is bound to, found among the pick and the branch's; null when neither is it any more. */
+async function pendingTarget($: EngineInterface, pending: PendingAction): Promise<PrSnapshot | null> {
+  const own = await read($, selectedSnapshotState)
+  for (const candidate of [own, await read($, snapshotState)]) {
+    if (candidate !== null && candidate.kind === 'pr' && candidate.pr.number === pending.prNumber && repoSlug(candidate.location)?.toLowerCase() === pending.repo) return candidate
+  }
+  return null
+}
+
+async function readView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette, subject: Subject): Promise<View> {
+  const { snapshot, isSelected } = await subjectSnapshot($, subject)
   const jobs = await read($, jobsState)
   const lastSeen = await read($, lastSeenState)
   const outcome = await read($, outcomeState)
-  const pending = await read($, pendingState)
+  const stored = await read($, pendingState)
   const nowMs = await $.clock.now()
   const status = snapshot.kind === 'pr' ? deriveStatus(snapshot.pr, snapshot.account.login, lastSeen[seenKey(snapshot)] ?? null) : null
-  return { snapshot, status, jobs, nowMs, columns, surface, palette, outcome, pending }
+  // With a pick set, a confirmation shows only where its pull request is shown.
+  const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored }
 }
 
 async function openUrl($: EngineInterface, url: string): Promise<void> {
@@ -129,10 +161,10 @@ async function openUrl($: EngineInterface, url: string): Promise<void> {
 
 /** Opens the detail pane, with the keyboard when asked (granted from an empty prompt). */
 async function showPane($: EngineInterface, isFocused: boolean): Promise<UiOpenResult> {
-  const snapshot = await read($, snapshotState)
+  const { snapshot } = await subjectSnapshot($, 'pane')
   // Docked, the pane takes the height of the screen; inline it would get a third and cut off,
   // so ask for what the content needs. A size the person dragged still wins (engine).
-  const view = await readView($, PANE_ROWS_COLUMNS, 'terminal', paletteFor(undefined))
+  const view = await readView($, PANE_ROWS_COLUMNS, 'terminal', paletteFor(undefined), 'pane')
   const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: paneRowCount(view), ...(isFocused ? { focus: true } : {}) })
   if (snapshot.kind === 'pr') {
     const nowMs = await $.clock.now()
@@ -151,8 +183,8 @@ async function closePane($: EngineInterface): Promise<void> {
   await $.ui.close({ id: PANE_ID })
 }
 
-async function openOnGitHub($: EngineInterface): Promise<boolean> {
-  const snapshot = await read($, snapshotState)
+async function openOnGitHub($: EngineInterface, subject: Subject): Promise<boolean> {
+  const { snapshot } = await subjectSnapshot($, subject)
   if (snapshot.kind !== 'pr') return false
   const exec: Exec = (argv, init) => $.process.run(argv, init)
   const { pr, location, account } = snapshot
@@ -163,8 +195,8 @@ async function openOnGitHub($: EngineInterface): Promise<boolean> {
   return true
 }
 
-async function copyUrl($: EngineInterface, surface: RenderSurface | undefined): Promise<string | null> {
-  const snapshot = await read($, snapshotState)
+async function copyUrl($: EngineInterface, surface: RenderSurface | undefined, subject: Subject): Promise<string | null> {
+  const { snapshot } = await subjectSnapshot($, subject)
   if (snapshot.kind !== 'pr') return null
   await $.ui.copy({ text: snapshot.pr.url, surface })
   return snapshot.pr.url
@@ -176,10 +208,10 @@ async function copyUrl($: EngineInterface, surface: RenderSurface | undefined): 
  * the person's confirm press. A slash command also opens the pane with the keyboard
  * (`isFromCommand`); a button press opens nothing, the person is already there.
  */
-async function requestAction($: EngineInterface, kind: ActionKind, isFromCommand = false): Promise<string> {
+async function requestAction($: EngineInterface, kind: ActionKind, subject: Subject, isFromCommand = false): Promise<string> {
   // A confirm is being handled: a new request must not replace what it acts on.
   if (confirmGuard.isBusy) return 'A confirmation is in progress, try again in a moment.'
-  const snapshot = await read($, snapshotState)
+  const { snapshot } = await subjectSnapshot($, subject)
   if (snapshot.kind !== 'pr') return 'No pull request for this branch.'
   const openedAt = await $.clock.now()
   const pending = buildPending(kind, snapshot, undefined, openedAt)
@@ -201,10 +233,10 @@ async function requestAction($: EngineInterface, kind: ActionKind, isFromCommand
 }
 
 /** Auto-merge is one toggle: off when it is on, on when it is off. */
-async function requestAutoMerge($: EngineInterface, isFromCommand = false): Promise<string> {
-  const snapshot = await read($, snapshotState)
+async function requestAutoMerge($: EngineInterface, subject: Subject, isFromCommand = false): Promise<string> {
+  const { snapshot } = await subjectSnapshot($, subject)
   if (snapshot.kind !== 'pr') return 'No pull request for this branch.'
-  return requestAction($, snapshot.pr.autoMerge === null ? 'auto-merge-on' : 'auto-merge-off', isFromCommand)
+  return requestAction($, snapshot.pr.autoMerge === null ? 'auto-merge-on' : 'auto-merge-off', subject, isFromCommand)
 }
 
 async function cancelPending($: EngineInterface): Promise<void> {
@@ -212,9 +244,11 @@ async function cancelPending($: EngineInterface): Promise<void> {
 }
 
 async function selectMethod($: EngineInterface, method: MergeMethod): Promise<void> {
-  const snapshot = await read($, snapshotState)
-  if (snapshot.kind !== 'pr') return
-  const allowed = snapshot.pr.allowedMethods
+  const pending = await read($, pendingState)
+  if (pending === null) return
+  const target = await pendingTarget($, pending)
+  if (target === null) return
+  const allowed = target.pr.allowedMethods
   await update($, pendingState, (current: PendingAction | null) => (current === null ? null : withMethod(current, method, allowed)))
 }
 
@@ -241,17 +275,22 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
       return
     }
     const exec: Exec = (argv, init) => $.process.run(argv, init)
-    const stored = await read($, snapshotState)
+    // The pull request the confirmation is bound to: the pick's or the branch's, never another one.
+    const stored = await pendingTarget($, pending)
+    const isPicked = (await read($, selectedState)) !== null
     const fail = async (message: string): Promise<void> => {
       await update($, outcomeState, () => ({ kind: pending.kind, isOk: false, message, at: new Date(pressedAt).toISOString() }))
     }
-    if (stored.kind !== 'pr') return await fail('no pull request to act on, review again')
+    if (stored === null) return await fail('no pull request to act on, review again')
     // The stored snapshot may be seconds old: re-read the pull request in full right before the write.
-    const fetched = await fetchPullRequest(exec, stored.location, pending.login)
+    // With a pick set the branch's pull request may not be the one asked for, so the lookup goes by its number.
+    const fetched = isPicked ? await fetchPullRequestByNumber(exec, stored.location, pending.login, pending.prNumber) : await fetchPullRequest(exec, stored.location, pending.login)
     if (fetched.kind !== 'ok' || fetched.pr === null) return await fail(RECHECK_FAILED)
     const freshPr = fetched.pr
     const latest: Snapshot = { kind: 'pr', at: new Date(await $.clock.now()).toISOString(), location: stored.location, account: stored.account, pr: freshPr }
-    await update($, snapshotState, () => latest)
+    // The fresh picture replaces the one the confirmation was asked on: the pick's own, else the branch's.
+    if (isPicked && (await read($, selectedSnapshotState)) !== null) await update($, selectedSnapshotState, () => latest)
+    else await update($, snapshotState, () => latest)
     // The confirmation may have been cancelled or changed while we fetched: act on what is pending now, or not at all.
     const isSame = (current: PendingAction | null): boolean => current !== null && JSON.stringify(current) === JSON.stringify(pending)
     if (!isSame(await read($, pendingState))) return
@@ -289,9 +328,36 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
   }
 }
 
+/**
+ * Shows another open pull request of the repository in the pane: sets the pick, drops
+ * the confirmation and result of the one before, opens the pane with the keyboard and
+ * refreshes. The band keeps showing the branch's pull request.
+ */
+async function selectPr($: EngineInterface, live: Live | null, number: number): Promise<string> {
+  if (!Number.isSafeInteger(number) || number < 1) return `${number} is not a pull request number.`
+  if (confirmGuard.isBusy) return 'A confirmation is in progress, try again in a moment.'
+  await update($, selectedState, () => ({ number }))
+  await update($, selectedSnapshotState, () => null)
+  await update($, pendingState, () => null)
+  await update($, outcomeState, () => null)
+  const opened = await showPane($, true)
+  if (live !== null) void live.run('command')
+  return opened.isPlaced ? `Showing PR #${number} in the pane.` : `PR #${number} selected but the pane is not drawn yet: ${opened.reason}`
+}
+
+/** Leaves the picked pull request: the pane shows the branch's again. */
+async function back($: EngineInterface, live: Live | null): Promise<void> {
+  if (confirmGuard.isBusy) return
+  await update($, selectedState, () => null)
+  await update($, selectedSnapshotState, () => null)
+  await update($, pendingState, () => null)
+  await update($, outcomeState, () => null)
+  if (live !== null) void live.run('command')
+}
+
 /** Puts the failed-check reference into the prompt box for the person to send or edit. */
-async function ciToClaude($: EngineInterface): Promise<string> {
-  const snapshot = await read($, snapshotState)
+async function ciToClaude($: EngineInterface, subject: Subject): Promise<string> {
+  const { snapshot } = await subjectSnapshot($, subject)
   if (snapshot.kind !== 'pr') return 'No pull request for this branch.'
   const text = ciReference(snapshot, await read($, jobsState))
   if (text === null) return 'No failed checks.'
@@ -306,11 +372,11 @@ async function ciToClaude($: EngineInterface): Promise<string> {
  * confirmation: it starts CI again, it changes no code and merges nothing. Never
  * retries; the refresh afterwards shows the queued jobs.
  */
-async function rerunFailed($: EngineInterface, live: Live | null): Promise<string> {
+async function rerunFailed($: EngineInterface, live: Live | null, subject: Subject): Promise<string> {
   if (rerunGuard.isBusy) return 'A re-run is in progress, try again in a moment.'
   rerunGuard.isBusy = true
   try {
-    const snapshot = await read($, snapshotState)
+    const { snapshot } = await subjectSnapshot($, subject)
     if (snapshot.kind !== 'pr') return 'No pull request for this branch.'
     const { pr, location, account } = snapshot
     const runIds = rerunnableRunIds(pr)
@@ -331,26 +397,28 @@ async function rerunFailed($: EngineInterface, live: Live | null): Promise<strin
 }
 
 /** The handler closures the band and pane call; each runs with the `$` of the hook that built it. */
-function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurface | undefined): Handlers {
+function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurface | undefined, subject: Subject): Handlers {
   return {
     refresh: () => {
       if (live !== null) void live.run('command')
     },
     openPane: () => void openPane($, live),
     closePane: () => void closePane($),
-    openOnGitHub: () => void openOnGitHub($),
-    copyUrl: () => void copyUrl($, surface),
+    openOnGitHub: () => void openOnGitHub($, subject),
+    copyUrl: () => void copyUrl($, surface, subject),
     openUrl: url => void openUrl($, url),
-    ciToClaude: () => void ciToClaude($),
-    rerunFailed: () => void rerunFailed($, live),
-    requestMerge: () => void requestAction($, 'merge'),
-    requestEnqueue: () => void requestAction($, 'enqueue'),
-    requestDequeue: () => void requestAction($, 'dequeue'),
-    requestAutoMerge: () => void requestAutoMerge($),
-    requestAdminMerge: () => void requestAction($, 'admin-merge'),
+    ciToClaude: () => void ciToClaude($, subject),
+    rerunFailed: () => void rerunFailed($, live, subject),
+    requestMerge: () => void requestAction($, 'merge', subject),
+    requestEnqueue: () => void requestAction($, 'enqueue', subject),
+    requestDequeue: () => void requestAction($, 'dequeue', subject),
+    requestAutoMerge: () => void requestAutoMerge($, subject),
+    requestAdminMerge: () => void requestAction($, 'admin-merge', subject),
     confirmPending: isSecondStep => void confirmPending($, live, isSecondStep === true),
     cancelPending: () => void cancelPending($),
     selectMethod: method => void selectMethod($, method),
+    selectPr: number => void selectPr($, live, number),
+    back: () => void back($, live),
   }
 }
 
@@ -385,7 +453,7 @@ export const register: Register = (on, options) => {
     const registeredNow: string[] = []
     for (const name of [...new Set(wanted)]) {
       try {
-        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
         registeredNow.push(name)
         ownNames.add(name)
       } catch {
@@ -411,20 +479,35 @@ export const register: Register = (on, options) => {
       forget: owner => $.store.delete(`account:${owner.toLowerCase()}`),
     }
 
-    const refresher = createRefresher({
+    // Two refreshers, each with its own single flight, accounts and backoff: the branch's pull
+    // request (the band) and the one picked from the list (the pane). The picked one idles
+    // while nothing is picked, or while the pick is the branch's own pull request.
+    const depsFor = (target: RefreshTarget): RefresherDeps => ({
+      target,
       config,
       readCwd: () => $.session.cwd(),
       readLocation: cwd => readLocation(exec, cwd),
       resolveAccount: location => resolveAccount({ exec, memory }, location, accountConfig),
       fetchPullRequest: (location, login) => fetchPullRequest(exec, location, login),
-      fastCheck: (location, login, target, etags) => fastCheck(exec, location, login, target, etags),
+      fetchPullRequestByNumber: (location, login, number) => fetchPullRequestByNumber(exec, location, login, number),
+      fastCheck: (location, login, fastTarget, etags) => fastCheck(exec, location, login, fastTarget, etags),
       fetchJobs: (location, login, runIds) => fetchJobs(exec, location, login, runIds),
       isPaneOpen: async () => (await $.ui.panes()).some(pane => pane.id === PANE_ID),
-      readState: async () => ({ snapshot: await read($, snapshotState), jobs: await read($, jobsState), etags: await read($, etagsState) }),
-      writeState: async patch => {
+      readState: async () => ({
+        snapshot: await read($, snapshotState),
+        jobs: await read($, jobsState),
+        etags: await read($, etagsState),
+        selected: await read($, selectedState),
+        selectedSnapshot: await read($, selectedSnapshotState),
+      }),
+      writeState: async (patch, writer) => {
         if (patch.snapshot !== undefined) {
           const snapshot = patch.snapshot
           await update($, snapshotState, () => snapshot)
+        }
+        if (patch.selectedSnapshot !== undefined) {
+          const selectedSnapshot = patch.selectedSnapshot
+          await update($, selectedSnapshotState, () => selectedSnapshot)
         }
         if (patch.jobs !== undefined) {
           const jobs = patch.jobs
@@ -436,7 +519,7 @@ export const register: Register = (on, options) => {
         }
         if (patch.etags !== undefined) {
           const etags = patch.etags
-          await update($, etagsState, () => etags)
+          await update($, etagsState, (stored: Record<string, string>) => mergeEtags(stored, etags, writer))
         }
       },
       now: () => $.clock.now(),
@@ -449,23 +532,28 @@ export const register: Register = (on, options) => {
         await $.ui.toast(text)
       },
     })
+    const branchRefresher = createRefresher(depsFor('branch'))
+    const selectedRefresher = createRefresher(depsFor('selected'))
 
     let timer: Timer | null = null
     const arm = async (): Promise<void> => {
       timer?.cancel()
       let delay = nextDelayMs({ kind: 'loading', at: '' }, null, config)
       try {
-        delay = nextDelayMs(await read($, snapshotState), await read($, rateLimitState), config)
+        const rateLimit = await read($, rateLimitState)
+        delay = nextDelayMs(await read($, snapshotState), rateLimit, config)
+        const picked = await read($, selectedSnapshotState)
+        if (picked !== null) delay = Math.min(delay, nextDelayMs(picked, rateLimit, config))
       } catch {
         // keep the slow default
       }
       timer = $.clock.after(delay, () => void run('timer'))
     }
     const run = async (reason: RefreshReason): Promise<void> => {
-      await refresher.refresh(reason)
+      await Promise.all([branchRefresher.refresh(reason), selectedRefresher.refresh(reason)])
       await arm()
     }
-    live = { refresher, run }
+    live = { run }
 
     if (e.isInteractive) void run('start')
     return next(e)
@@ -477,26 +565,31 @@ export const register: Register = (on, options) => {
     if (!activeNames.includes(e.command)) return next(e)
     const argument = e.args.trim().toLowerCase()
     if (argument === '') return { text: await openPane($, live) }
+    if (/^#?\d+$/.test(argument)) return { text: await selectPr($, live, Number(argument.replace('#', ''))) }
+    if (argument === 'back') {
+      await back($, live)
+      return { text: 'Showing the pull request of this branch.' }
+    }
     if (argument === 'refresh') {
       if (live === null) return { text: 'gh-status has not started yet.' }
       await live.run('command')
-      const snapshot = await read($, snapshotState)
+      const { snapshot } = await subjectSnapshot($, 'pane')
       return { text: snapshot.kind === 'pr' ? `Refreshed PR #${snapshot.pr.number}.` : 'Refreshed.' }
     }
     if (argument === 'open') {
-      const isOpened = await openOnGitHub($)
+      const isOpened = await openOnGitHub($, 'pane')
       return { text: isOpened ? 'Opening the pull request on GitHub.' : 'No pull request for this branch.' }
     }
     if (argument === 'copy') {
-      const url = await copyUrl($, undefined)
+      const url = await copyUrl($, undefined, 'pane')
       return { text: url === null ? 'No pull request for this branch.' : `Copied ${url}` }
     }
     // These set the confirmation pending and open the pane with the keyboard; the write waits for the confirm press.
     const write = WRITE_COMMANDS[argument]
-    if (write === 'auto') return { text: await requestAutoMerge($, true) }
-    if (write !== undefined) return { text: await requestAction($, write, true) }
-    if (argument === 'rerun' || argument === 'rr') return { text: await rerunFailed($, live) }
-    if (argument === 'fix') return { text: await ciToClaude($) }
+    if (write === 'auto') return { text: await requestAutoMerge($, 'pane', true) }
+    if (write !== undefined) return { text: await requestAction($, write, 'pane', true) }
+    if (argument === 'rerun' || argument === 'rr') return { text: await rerunFailed($, live, 'pane') }
+    if (argument === 'fix') return { text: await ciToClaude($, 'pane') }
     if (argument === 'close') {
       await closePane($)
       await cancelPending($)
@@ -526,9 +619,9 @@ export const register: Register = (on, options) => {
     let mine: RenderElement | null = null
     let table: UiTable | null = null
     try {
-      const view = await readView($, e.props.bodyColumns, e.surface, palette)
+      const view = await readView($, e.props.bodyColumns, e.surface, palette, 'branch')
       table = $.ui.resolve(e)
-      mine = renderBand(table, view, handlersFor($, live, e.surface))
+      mine = renderBand(table, view, handlersFor($, live, e.surface, 'branch'))
     } catch {
       return next(e)
     }
@@ -547,8 +640,8 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     try {
-      const view = await readView($, e.props.bodyColumns, e.surface, palette)
-      return renderPane($.ui.resolve(e), view, handlersFor($, live, e.surface))
+      const view = await readView($, e.props.bodyColumns, e.surface, palette, 'pane')
+      return renderPane($.ui.resolve(e), view, handlersFor($, live, e.surface, 'pane'))
     } catch {
       return next(e)
     }

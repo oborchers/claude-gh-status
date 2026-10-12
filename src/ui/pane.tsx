@@ -1,4 +1,4 @@
-// The pane: header, merge, pipeline, reviews and conversation of the branch's PR.
+// The pane: header, merge, pipeline, reviews and conversation of one PR (the branch's, or the one picked from the list).
 
 import type { RenderElement } from 'claude-code'
 
@@ -19,6 +19,8 @@ const MAX_THREAD_ROWS = 12
 const MAX_PANE_ROWS = 40
 const MIN_PANE_ROWS = 6
 const HEADER_ROWS = 4
+/** The row with the back button while a pull request picked from the list is shown. */
+const BACK_ROWS = 1
 
 function checkColor(state: CheckState): Tone | undefined {
   switch (state) {
@@ -395,7 +397,8 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
   const columns = view.columns
   const badge = prBadge(pr)
   // One line: the colored state badge, then the title, cut to what is left.
-  const title = truncate(`PR #${pr.number} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3))
+  const label = view.isSelected === true ? `PR #${pr.number} (selected)` : `PR #${pr.number}`
+  const title = truncate(`${label} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3))
   return [
     <Box flexDirection="row" flexWrap="nowrap">
       <Box flexShrink={0}>
@@ -416,7 +419,16 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
       {truncate(`${shortSha(pr.headOid)} · refreshed ${relativeTime(snapshot.at, view.nowMs)}`, columns)}
     </Text>,
     ...staleRows(table, view, snapshot),
+    ...backRows(table, view, handlers),
   ]
+}
+
+/** The back button, drawn only while the pane shows a pull request picked from the list. */
+function backRows(table: UiTable, view: View, handlers: Handlers): RenderElement[] {
+  const { Button } = table
+  const { back } = handlers
+  if (view.isSelected !== true || back === undefined) return []
+  return [<Button key="back" plain hotkey="b" label="back" onPress={() => back()} />]
 }
 
 /** The pane body for a view. */
@@ -433,6 +445,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
           {text}
         </Text>
         <Button key="refresh" plain hotkey="r" label="refresh" onPress={() => handlers.refresh()} />
+        {backRows(table, view, handlers)}
       </Box>
     )
   }
@@ -532,11 +545,11 @@ export function paneRowCount(view: View): number {
   if (snapshot.kind !== 'pr' || status === null) {
     const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
     const wrapped = Math.max(1, Math.ceil(cellWidth(text) / Math.max(1, view.columns)))
-    return Math.max(MIN_PANE_ROWS, wrapped + 1)
+    return Math.max(MIN_PANE_ROWS, wrapped + 1 + (view.isSelected === true ? BACK_ROWS : 0))
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS + (snapshot.stale ? 1 : 0),
+    HEADER_ROWS + (snapshot.stale ? 1 : 0) + (view.isSelected === true ? BACK_ROWS : 0),
     mergeRowCount(view, pr, status),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),

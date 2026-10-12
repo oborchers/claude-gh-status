@@ -14,6 +14,8 @@ export type View = {
   snapshot: Snapshot
   /** Derived status; null unless snapshot.kind is 'pr'. */
   status: Status | null
+  /** True while the pane shows a pull request picked from the list instead of the branch's; the band never sets it. */
+  isSelected?: boolean
   /** Live job details; empty unless the pane is open and checks run. */
   jobs: JobDetail[]
   /** Epoch ms of this draw, for relative times and running durations. */
@@ -58,4 +60,8 @@ export type Handlers = {
   /** The cancel key: clears the pending action, no write. */
   cancelPending(): void
   selectMethod(method: MergeMethod): void
+  /** Shows this pull request of the repository in the pane (the list's rows call it). */
+  selectPr?(number: number): void
+  /** Leaves the selected pull request: the pane shows the branch's again. */
+  back?(): void
 }
