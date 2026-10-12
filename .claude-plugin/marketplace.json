@@ -1,0 +1,12 @@
+{
+  "name": "oborchers",
+  "owner": { "name": "Oliver Borchers" },
+  "metadata": { "description": "Claude Code mods by Oliver Borchers." },
+  "plugins": [
+    {
+      "name": "gh-status",
+      "source": "./",
+      "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions."
+    }
+  ]
+}

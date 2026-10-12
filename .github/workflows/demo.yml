@@ -1,0 +1,114 @@
+# Demo pipeline for README screenshots of gh-status.
+# Runs only on pushes to demo/* branches. Jobs only sleep; nothing is built.
+name: Demo
+
+on:
+  push:
+    branches: ['demo/**']
+
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sleep 15
+      - name: Lint
+        run: sleep 30
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sleep 15
+      - name: Type check
+        run: sleep 45
+
+  unit:
+    name: Unit (node ${{ matrix.node }}, shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+        shard: [1, 2, 3]
+    steps:
+      - name: Install dependencies
+        run: sleep 20
+      - name: Run tests
+        run: sleep $(( 60 + ${{ matrix.shard }} * 30 ))
+      - name: Upload coverage
+        run: sleep 10
+
+  build:
+    needs: [lint, typecheck]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sleep 15
+      - name: Build
+        run: sleep 90
+      - name: Upload artifact
+        run: sleep 10
+
+  e2e:
+    name: E2E (${{ matrix.browser }})
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - name: Install browsers
+        run: sleep 30
+      - name: Start app
+        run: sleep 20
+      - name: Run end-to-end tests
+        run: sleep 180
+
+  integration:
+    name: Integration (payments)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start services
+        run: sleep 30
+      - name: Run integration tests
+        run: |
+          sleep 60
+          echo "Expected 200, got 503 from payments-sandbox (demo failure)"
+          exit 1
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan dependencies
+        run: sleep 40
+
+  docs:
+    if: contains(github.event.head_commit.message, '[docs]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build docs
+        run: sleep 30
+
+  deploy-preview:
+    if: github.ref == 'refs/heads/main'
+    name: Deploy preview
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy
+        run: sleep 30
+
+  summary:
+    if: always()
+    name: CI Summary
+    needs: [lint, typecheck, unit, build, e2e, integration, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        run: sleep 5

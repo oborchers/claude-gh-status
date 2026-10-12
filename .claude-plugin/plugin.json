@@ -1,0 +1,42 @@
+{
+  "name": "gh-status",
+  "version": "0.1.0",
+  "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Oliver Borchers"
+  },
+  "userConfig": {
+    "accounts": {
+      "type": "string",
+      "title": "Account per owner",
+      "description": "Optional owner=login pairs, comma separated, e.g. my-user=my-user,my-org=work-login. Wins over automatic detection.",
+      "default": ""
+    },
+    "fastIntervalSeconds": {
+      "type": "number",
+      "title": "Fast interval (s)",
+      "description": "Check interval while checks run or the PR is in the merge queue.",
+      "default": 5
+    },
+    "idleIntervalSeconds": {
+      "type": "number",
+      "title": "Idle interval (s)",
+      "description": "Check interval when nothing runs.",
+      "default": 30
+    },
+    "toasts": {
+      "type": "boolean",
+      "title": "Toasts on state changes",
+      "description": "Show a toast when the pipeline, reviews, comments or mergeability change.",
+      "default": true
+    },
+    "colors": {
+      "type": "string",
+      "title": "Color scheme",
+      "description": "claude follows your Claude Code theme; github uses GitHub's Primer colors",
+      "options": ["claude", "github"],
+      "default": "claude"
+    }
+  }
+}

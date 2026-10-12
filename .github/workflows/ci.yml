@@ -1,0 +1,36 @@
+# Validates the mod and runs its tests. No login or API key is needed:
+# `claude plugin validate` and `claude plugin test` run offline.
+# `tsc -p .` is left out on purpose: tsconfig.json includes .claude-plugin/types
+# (the `claude-code` module types), which the engine generates when it loads the
+# mod in a signed-in session. Neither command below generates it.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_VERSION: 2.1.296
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@${{ env.CLAUDE_CODE_VERSION }}
+      - name: Validate
+        run: claude plugin validate .
+      - name: Test
+        run: claude plugin test .
