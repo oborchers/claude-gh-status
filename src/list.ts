@@ -7,13 +7,23 @@
 
 import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
-import type { ListChecks, ListCounts, ListGroup, ListItem, RateLimit, RepoLocation, ReviewDecision } from './model'
+import type { AccountChoice, ListChecks, ListCounts, ListGroup, ListItem, PrList, Problem, RateLimit, RepoLocation, ReviewDecision } from './model'
+import { backoffMs, isTransient, reasonOf } from './scheduler'
 
 /** Most pull requests one list read returns; a repository with more is truncated. */
 export const LIST_LIMIT = 100
 
 /** Rows per page of the list. */
 export const PAGE_SIZE = 25
+
+/** The list is read again this often while its pane is open. */
+export const LIST_POLL_MS = 60_000
+
+/** The band's counts are read again this often. */
+export const COUNTS_POLL_MS = 300_000
+
+/** A failed counts read is tried again after this long, never sooner. */
+export const COUNTS_RETRY_MS = 60_000
 
 /** Group order, as drawn. */
 export const GROUPS: readonly ListGroup[] = ['yours', 'requested', 'waiting', 'other']
@@ -366,4 +376,46 @@ export async function fetchCounts(exec: Exec, location: RepoLocation, login: str
     },
     rateLimit: toRateLimit(data?.rateLimit),
   }
+}
+
+/** The transient failure a list is retrying, if any. */
+export function listProblemOf(list: PrList | null): Problem | null {
+  if (list === null || list.kind === 'loading') return null
+  return list.problem ?? null
+}
+
+/**
+ * The list after a read. A transient failure keeps the last list and marks it
+ * with a problem (15, 30, then 60 s backoff, as for the pull request); with no
+ * list to keep it becomes an error that still carries the problem.
+ */
+export function listAfter(prev: PrList | null, fetched: FetchedList, at: string, location: RepoLocation, account: AccountChoice): PrList {
+  if (fetched.kind === 'ok') {
+    return { kind: 'list', at, location, account, items: fetched.items, total: fetched.total, isTruncated: fetched.isTruncated, problem: null }
+  }
+  const failure = fetched.failure
+  if (!isTransient(failure.kind)) return { kind: 'error', at, message: failure.kind === 'gh-missing' ? 'gh is not installed' : failure.message }
+  const earlier = listProblemOf(prev)
+  const problem: Problem = { reason: reasonOf(failure), since: earlier?.since ?? at, triedAt: at, retryInMs: backoffMs(earlier?.retryInMs ?? null) }
+  if (prev !== null && prev.kind === 'list') return { ...prev, problem }
+  return { kind: 'error', at, message: failure.message, problem }
+}
+
+/** Milliseconds until the next read of the list. */
+export function listDelayMs(list: PrList | null): number {
+  return listProblemOf(list)?.retryInMs ?? LIST_POLL_MS
+}
+
+/** Rows the list pane needs for its current page: the page's rows, a header per group shown, and the title and footer lines. */
+export function listRowCount(list: PrList | null, page: number, hideDrafts: boolean): number {
+  if (list === null || list.kind !== 'list') return 6
+  const shown = paginate(groupItems(list.items, list.account.login), page + 1, PAGE_SIZE, hideDrafts)
+  const groups = new Set(shown.rows.map(row => row.group)).size
+  return Math.min(40, Math.max(6, shown.rows.length + groups + 4))
+}
+
+/** The highest zero-based page of the list under the current draft filter. */
+export function lastPage(list: PrList | null, hideDrafts: boolean): number {
+  if (list === null || list.kind !== 'list') return 0
+  return paginate(groupItems(list.items, list.account.login), 1, PAGE_SIZE, hideDrafts).pageCount - 1
 }
