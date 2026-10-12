@@ -166,7 +166,7 @@ function titleLine(table: UiTable, view: ListView, handlers: ListHandlers, item:
     <Text>{' '}</Text>,
   ]
   if (hasDraftPrefix) parts.push(drawRun(table, view.palette, { text: DRAFT, isDim: true }))
-  parts.push(drawRun(table, view.palette, { text: title, isBold: true, isDim: item.isDraft }))
+  parts.push(drawRun(table, view.palette, { text: title, isBold: !item.isDraft, isDim: item.isDraft }))
   if (labels.length > 0) {
     parts.push(<Text>{GAP}</Text>)
     for (const run of labels) parts.push(drawRun(table, view.palette, run))

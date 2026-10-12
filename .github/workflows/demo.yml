@@ -79,8 +79,12 @@ jobs:
       - name: Run integration tests
         run: |
           sleep 60
-          echo "Expected 200, got 503 from payments-sandbox (demo failure)"
-          exit 1
+          # Only some demo branches fail, so the list shows passing, running and failing pull requests.
+          case "$GITHUB_REF_NAME" in
+            demo/checkout-flow|demo/invoice-rounding)
+              echo "Expected 200, got 503 from payments-sandbox (demo failure)"
+              exit 1 ;;
+          esac
 
   security:
     name: Security scan

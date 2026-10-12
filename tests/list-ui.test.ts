@@ -390,7 +390,7 @@ describe('renderList rows', () => {
     }
   })
 
-  test('the title is bold, a draft has a dim prefix and a dim title', async ($, on) => {
+  test('the title is bold; a draft has a dim prefix and a dim, not bold, title', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf([item(7, { isDraft: true, title: 'wip' }), item(8, { title: 'ready' })]), 100), handlersFor([]))
     const lines = await linesOf(ui)
@@ -399,7 +399,8 @@ describe('renderList rows', () => {
     const draftTitle = await ui.find({ key: 'pr-7' })
     const text = (button: unknown, content: string) => nodesOf(button).find((node) => node.type === 'Text' && node.children?.[0] === content)
     expect(text(draftTitle, 'draft ')?.props?.dimColor).toBe(true)
-    expect(text(draftTitle, 'wip')?.props).toMatchObject({ bold: true, dimColor: true })
+    expect(text(draftTitle, 'wip')?.props).toMatchObject({ dimColor: true })
+    expect(text(draftTitle, 'wip')?.props?.bold).toBeUndefined()
     const ready = await ui.find({ key: 'pr-8' })
     expect(text(ready, 'ready')?.props).toMatchObject({ bold: true })
     expect(text(ready, 'ready')?.props?.dimColor).toBeUndefined()
