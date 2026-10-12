@@ -1,6 +1,6 @@
 {
   "name": "gh-status",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions.",
   "types": "./types/index.d.ts",
   "author": {
