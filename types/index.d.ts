@@ -329,6 +329,8 @@ export type PrList =
 
 /** Counts for the band when the branch has no pull request. */
 export type ListCounts = {
+  /** All open pull requests of the repository. */
+  open: number;
   yours: number;
   requested: number;
   at: string;

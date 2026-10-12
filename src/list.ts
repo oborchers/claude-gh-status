@@ -46,7 +46,8 @@ export const REQUESTED_QUERY = `query($q: String!) {
 }`
 
 /** The two numbers of the band: variables $yours (`... author:@me`) and $requested (`... review-requested:@me`). */
-export const COUNTS_QUERY = `query($yours: String!, $requested: String!) {
+export const COUNTS_QUERY = `query($open: String!, $yours: String!, $requested: String!) {
+  open: search(query: $open, type: ISSUE, first: 0) { issueCount }
   yours: search(query: $yours, type: ISSUE, first: 0) { issueCount }
   requested: search(query: $requested, type: ISSUE, first: 0) { issueCount }
   rateLimit { cost remaining resetAt }
@@ -324,7 +325,7 @@ async function ask(exec: Exec, query: string, variables: Record<string, string>,
 
 function searchOf(location: RepoLocation, qualifiers: string): string | null {
   if (location.owner === null || location.repo === null) return null
-  return `repo:${location.owner}/${location.repo} is:pr is:open ${qualifiers}`
+  return `repo:${location.owner}/${location.repo} is:pr is:open ${qualifiers}`.trim()
 }
 
 /**
@@ -348,15 +349,17 @@ export async function fetchList(exec: Exec, location: RepoLocation, login: strin
 
 /** Reads the band's two numbers for a branch without a pull request (1 point). */
 export async function fetchCounts(exec: Exec, location: RepoLocation, login: string, now: () => string = () => new Date().toISOString()): Promise<FetchedCounts> {
+  const open = searchOf(location, '')
   const yours = searchOf(location, 'author:@me')
   const requested = searchOf(location, 'review-requested:@me')
-  if (yours === null || requested === null) return { kind: 'error', failure: failed('no GitHub repository to count') }
-  const asked = await ask(exec, COUNTS_QUERY, { yours, requested }, location, login)
+  if (open === null || yours === null || requested === null) return { kind: 'error', failure: failed('no GitHub repository to count') }
+  const asked = await ask(exec, COUNTS_QUERY, { open, yours, requested }, location, login)
   if ('failure' in asked) return { kind: 'error', failure: asked.failure }
   const data = asObj(asObj(asked.answer)?.data)
   return {
     kind: 'ok',
     counts: {
+      open: asNum(asObj(data?.open)?.issueCount) ?? 0,
       yours: asNum(asObj(data?.yours)?.issueCount) ?? 0,
       requested: asNum(asObj(data?.requested)?.issueCount) ?? 0,
       at: now(),

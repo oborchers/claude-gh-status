@@ -439,12 +439,12 @@ describe('fetchList', () => {
 describe('fetchCounts', () => {
   test('reads the band numbers in one query', async () => {
     forgetTokens()
-    const body = { data: { yours: { issueCount: 3 }, requested: { issueCount: 5 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
+    const body = { data: { open: { issueCount: 18 }, yours: { issueCount: 3 }, requested: { issueCount: 5 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
     const { exec, calls } = fakeExec([{ match: 'first: 0', stdout: JSON.stringify(body) }])
     const result = await fetchCounts(exec, location, 'me', () => '2026-10-12T12:00:00Z')
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
-    expect(result.counts).toEqual({ yours: 3, requested: 5, at: '2026-10-12T12:00:00Z' })
+    expect(result.counts).toEqual({ open: 18, yours: 3, requested: 5, at: '2026-10-12T12:00:00Z' })
     expect(result.rateLimit?.remaining).toBe(4000)
     const graphql = calls.filter(call => call.argv[1] === 'api')
     expect(graphql).toHaveLength(1)
