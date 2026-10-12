@@ -54,10 +54,15 @@ function statusOf(item: ListItem): Run {
 
 function checksRun(item: ListItem): Run | null {
   const { checks } = item
-  if (checks === null || checks.total <= 0) return null
-  if (checks.failed > 0) return { text: `${checks.failed}/${checks.total} checks failing`, color: 'failure' }
-  if (checks.pending > 0) return { text: `${checks.pending}/${checks.total} checks ${isOnlyQueued(item) ? 'queued' : 'running'}`, isDim: true }
-  return { text: `${checks.passed}/${checks.total} passing`, isDim: true }
+  if (checks === null) return null
+  // Skipped and neutral checks did not run; they are counted apart, never as part of the total that passed.
+  const ran = checks.passed + checks.failed + checks.pending
+  const skipped = checks.total - ran
+  const skippedText = skipped > 0 ? `, ${skipped} skipped` : ''
+  if (ran <= 0) return skipped > 0 ? { text: `${skipped} skipped`, isDim: true } : null
+  if (checks.failed > 0) return { text: `${checks.failed}/${ran} checks failing${skippedText}`, color: 'failure' }
+  if (checks.pending > 0) return { text: `${checks.pending}/${ran} checks ${isOnlyQueued(item) ? 'queued' : 'running'}${skippedText}`, isDim: true }
+  return { text: `${checks.passed}/${ran} passing${skippedText}`, isDim: true }
 }
 
 function reviewRun(item: ListItem): Run | null {

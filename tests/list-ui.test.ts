@@ -360,7 +360,9 @@ describe('renderList rows', () => {
     }
     expect(await metaOf({})).toBe('    #9 · @anna · opened just now')
     expect(await metaOf({ checks: { passed: 4, failed: 0, pending: 0, total: 4 } })).toBe('    #9 · @anna · opened just now · 4/4 passing')
-    expect(await metaOf({ checks: { passed: 4, failed: 2, pending: 1, total: 8 } })).toBe('    #9 · @anna · opened just now · 2/8 checks failing')
+    expect(await metaOf({ checks: { passed: 4, failed: 2, pending: 1, total: 8 } })).toBe('    #9 · @anna · opened just now · 2/7 checks failing, 1 skipped')
+    expect(await metaOf({ checks: { passed: 16, failed: 0, pending: 0, total: 18 } })).toBe('    #9 · @anna · opened just now · 16/16 passing, 2 skipped')
+    expect(await metaOf({ checks: { passed: 0, failed: 0, pending: 0, total: 3 } })).toBe('    #9 · @anna · opened just now · 3 skipped')
     expect(await metaOf({ checks: { passed: 1, failed: 0, pending: 3, queued: 1, total: 4 } })).toBe('    #9 · @anna · opened just now · 3/4 checks running')
     expect(await metaOf({ checks: { passed: 1, failed: 0, pending: 3, queued: 3, total: 4 } })).toBe('    #9 · @anna · opened just now · 3/4 checks queued')
     expect(await metaOf({ reviewDecision: 'approved' })).toBe('    #9 · @anna · opened just now · approved')
@@ -372,7 +374,7 @@ describe('renderList rows', () => {
   test('the facts line is dim; only failing checks and approved are colored', async ($, on) => {
     const rig = createRig(on)
     for (const palette of [PALETTES.claude, PALETTES.github]) {
-      const failingItem = item(9, { checks: { passed: 0, failed: 1, pending: 0, total: 2 }, reviewDecision: 'approved', comments: 3 })
+      const failingItem = item(9, { checks: { passed: 1, failed: 1, pending: 0, total: 2 }, reviewDecision: 'approved', comments: 3 })
       const ui = await rig.list($, 'terminal', viewOf(listOf([failingItem]), 120, { palette }), handlersFor([]))
       const meta = await ui.find({ key: 'pr-9-meta' })
       const texts = nodesOf(meta).filter((node) => node.type === 'Text' && typeof node.children?.[0] === 'string' && node.children[0].trim() !== '')
@@ -483,7 +485,7 @@ describe('renderList fits the width', () => {
         title: 'An extremely long title: '.repeat(6),
         author: 'a-rather-long-author-login',
         labels,
-        checks: { passed: 100, failed: index % 2, pending: 0, total: 123 },
+        checks: { passed: 122, failed: index % 2, pending: 0, total: 123 },
         reviewDecision: 'changes-requested',
         comments: 1234,
         isDraft: index === 0,
