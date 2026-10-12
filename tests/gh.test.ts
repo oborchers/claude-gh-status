@@ -49,3 +49,14 @@ describe('runGh', () => {
     expect(await runGh(exec, ['api', 'user'], { login: null })).toMatchObject({ isOk: false, kind: 'server', message: 'gh: HTTP 504' })
   })
 })
+
+describe('classifyGhError for GraphQL internal errors', () => {
+  test('a GraphQL internal error during an outage is a temporary server problem', () => {
+    const stderr = "gh: Something went wrong while executing your query on 2026-10-12T12:56:00Z. Please include `3072:2D6B0:9F118E:EA5BA5:6ACCD8D6` when reporting this issue."
+    expect(classifyGhError(stderr)).toBe('server')
+  })
+
+  test('a GraphQL timeout is a temporary server problem', () => {
+    expect(classifyGhError("gh: We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request")).toBe('server')
+  })
+})

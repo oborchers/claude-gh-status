@@ -18,7 +18,7 @@ The pull request status of your current branch, live inside Claude Code, so you 
 
 <img src="docs/images/compact-view.png" alt="The detail pane opened inline above the prompt in a narrow terminal" width="70%">
 
-In a narrow terminal (about 100 columns in our tests) the pane opens inline above the prompt instead of docking beside the transcript.
+Below 110 columns, or outside the fullscreen layout, the pane opens inline above the prompt instead of docking beside the transcript.
 
 ## Merge without leaving the terminal
 
