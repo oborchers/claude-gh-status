@@ -48,7 +48,7 @@ export function problemOf(snapshot: Snapshot): Problem | null {
 }
 
 /** Short label of a transient failure for the hint: `504`, `network`, ... */
-function reasonOf(failure: { kind: string; message: string }): string {
+export function reasonOf(failure: { kind: string; message: string }): string {
   if (failure.kind === 'server') return /\b50\d\b/.exec(failure.message)?.[0] ?? 'bad response'
   if (failure.kind === 'rate-limited') return 'rate limit'
   return failure.kind
@@ -172,7 +172,7 @@ function repoKey(location: RepoLocation): string {
   return `${(location.owner ?? '').toLowerCase()}/${(location.repo ?? '').toLowerCase()}`
 }
 
-function isTransient(kind: string): boolean {
+export function isTransient(kind: string): boolean {
   return kind === 'network' || kind === 'timeout' || kind === 'rate-limited' || kind === 'server'
 }
 

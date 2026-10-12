@@ -10,7 +10,8 @@ import { parseAccountConfig, resolveAccount } from '../src/accounts'
 import type { AccountMemory } from '../src/accounts'
 import { readLocation } from '../src/git'
 import { fetchJobs } from '../src/jobs'
-import type { MergeMethod, PendingAction, Snapshot } from '../src/model'
+import { COUNTS_POLL_MS, COUNTS_RETRY_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount } from '../src/list'
+import type { AccountChoice, ListCounts, MergeMethod, PendingAction, PrList, RepoLocation, Snapshot } from '../src/model'
 import { fetchPullRequest, fetchPullRequestByNumber } from '../src/query'
 import { createRefresher, etagsOf, mergeEtags, nextDelayMs } from '../src/scheduler'
 import type { RefreshReason, RefreshTarget, RefresherDeps, SchedulerConfig } from '../src/scheduler'
@@ -20,11 +21,14 @@ import { confirmTitle } from '../src/ui/confirm'
 import { paletteFor } from '../src/ui/colors'
 import type { Palette } from '../src/ui/colors'
 import { count } from '../src/ui/format'
+import { renderList } from '../src/ui/list'
 import { paneRowCount, renderPane } from '../src/ui/pane'
-import type { Handlers, UiTable, View } from '../src/ui/contract'
+import type { Handlers, ListHandlers, ListView, UiTable, View } from '../src/ui/contract'
 
 const PANE_ID = 'gh-status'
 const PANE_TITLE = 'PR'
+const LIST_ID = 'gh-status-list'
+const LIST_TITLE = 'Open PRs'
 /** Width the opening row count is estimated at; button wrapping is the only thing it changes. */
 const PANE_ROWS_COLUMNS = 80
 
@@ -40,7 +44,7 @@ const FALLBACK_COMMAND = 'gh-pr'
 const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
 const PLUGIN_NAME = 'gh-status'
 
-const usageFor = (name: string): string => `Usage: /${name} [<number> | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
+const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x)]`
 
 /** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
 function commandNameOf(value: unknown): string {
@@ -73,6 +77,10 @@ const pendingState = atom({ plugin: 'gh-status', key: 'pending' } as const, null
 const outcomeState = atom({ plugin: 'gh-status', key: 'outcome' } as const, null)
 const selectedState = atom({ plugin: 'gh-status', key: 'selected' } as const, null)
 const selectedSnapshotState = atom({ plugin: 'gh-status', key: 'selectedSnapshot' } as const, null)
+const listState = atom({ plugin: 'gh-status', key: 'list' } as const, null)
+const listPageState = atom({ plugin: 'gh-status', key: 'listPage' } as const, 0)
+const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } as const, false)
+const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
 
 /** One confirm press at a time: a second press while one is being handled is dropped. */
 const confirmGuard = { isBusy: false }
@@ -87,6 +95,12 @@ const ownToast: { prefix: string | null; untilMs: number } = { prefix: null, unt
 type Live = {
   /** Refreshes the branch's pull request and the picked one, then re-arms the timer for the interval the new state asks for. */
   run(reason: RefreshReason): Promise<void>
+  /** Reads the repository's open pull requests now (single flight) and, while the list pane is open, keeps reading them. */
+  runList(): Promise<void>
+  /** Stops the list polling; the list pane was closed. */
+  stopList(): void
+  /** The directory changed: refreshes the branch's pull request, the counts and, while the list pane is open, the list. */
+  cwdChanged(): Promise<void>
 }
 
 /** Which pull request a handler acts on: the branch's (the band) or the one the pane shows (the picked one, else the branch's). */
@@ -144,7 +158,23 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   const status = snapshot.kind === 'pr' ? deriveStatus(snapshot.pr, snapshot.account.login, lastSeen[seenKey(snapshot)] ?? null) : null
   // With a pick set, a confirmation shows only where its pull request is shown.
   const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
-  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored }
+  const counts = await read($, countsState)
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, counts }
+}
+
+async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<ListView> {
+  const selected = await read($, selectedState)
+  return {
+    list: await read($, listState),
+    page: await read($, listPageState),
+    hideDrafts: await read($, listHideDraftsState),
+    selectedNumber: selected === null ? null : selected.number,
+    counts: await read($, countsState),
+    nowMs: await $.clock.now(),
+    columns,
+    surface,
+    palette,
+  }
 }
 
 async function openUrl($: EngineInterface, url: string): Promise<void> {
@@ -355,6 +385,40 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
   if (live !== null) void live.run('command')
 }
 
+/** Opens the list pane with the keyboard, sized to its current page, and reads the list now. */
+async function openList($: EngineInterface, live: Live | null): Promise<string> {
+  const rows = listRowCount(await read($, listState), await read($, listPageState), await read($, listHideDraftsState))
+  const opened = await $.ui.open({ id: LIST_ID, title: LIST_TITLE, rows, focus: true })
+  if (live !== null) void live.runList()
+  return opened.isPlaced ? 'Open PRs listed in the pane.' : `Open PRs pane opened but not drawn yet: ${opened.reason}`
+}
+
+async function setPage($: EngineInterface, step: 1 | -1): Promise<void> {
+  const last = lastPage(await read($, listState), await read($, listHideDraftsState))
+  await update($, listPageState, (page: number) => Math.min(Math.max(page + step, 0), last))
+}
+
+async function toggleDrafts($: EngineInterface): Promise<void> {
+  await update($, listHideDraftsState, (isHidden: boolean) => !isHidden)
+  await update($, listPageState, () => 0)
+}
+
+/** The handler closures of the list pane. They read and open; none of them writes to GitHub. */
+function listHandlersFor($: EngineInterface, live: Live | null): ListHandlers {
+  return {
+    selectPr: number => void selectPr($, live, number),
+    nextPage: () => void setPage($, 1),
+    prevPage: () => void setPage($, -1),
+    toggleDrafts: () => void toggleDrafts($),
+    refresh: () => {
+      if (live !== null) void live.runList()
+    },
+    back: () => void back($, live),
+    closeList: () => void $.ui.close({ id: LIST_ID }),
+    openUrl: url => void openUrl($, url),
+  }
+}
+
 /** Puts the failed-check reference into the prompt box for the person to send or edit. */
 async function ciToClaude($: EngineInterface, subject: Subject): Promise<string> {
   const { snapshot } = await subjectSnapshot($, subject)
@@ -419,6 +483,7 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
     selectMethod: method => void selectMethod($, method),
     selectPr: number => void selectPr($, live, number),
     back: () => void back($, live),
+    openList: () => void openList($, live),
   }
 }
 
@@ -453,7 +518,7 @@ export const register: Register = (on, options) => {
     const registeredNow: string[] = []
     for (const name of [...new Set(wanted)]) {
       try {
-        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
         registeredNow.push(name)
         ownNames.add(name)
       } catch {
@@ -553,9 +618,117 @@ export const register: Register = (on, options) => {
       await Promise.all([branchRefresher.refresh(reason), selectedRefresher.refresh(reason)])
       await arm()
     }
-    live = { run }
 
-    if (e.isInteractive) void run('start')
+    // The list and the counts read the repository of the directory with the account the branch target resolved.
+    // Each has its own single flight and timer; a request that arrives during a read joins it.
+    type RepoTarget = { location: RepoLocation; account: AccountChoice }
+    const repoTarget = async (): Promise<RepoTarget | string> => {
+      const location = await readLocation(exec, await $.session.cwd())
+      if (location === null || location.owner === null || location.repo === null) return 'no GitHub repository here'
+      const branch = await read($, snapshotState)
+      if ((branch.kind === 'pr' || branch.kind === 'no-pr') && branch.location.owner?.toLowerCase() === location.owner.toLowerCase() && branch.location.repo?.toLowerCase() === location.repo.toLowerCase()) {
+        return { location, account: branch.account }
+      }
+      const resolved = await resolveAccount({ exec, memory }, location, accountConfig)
+      return 'login' in resolved ? { location, account: resolved } : 'no GitHub account can read this repository'
+    }
+
+    let isListPolling = false
+    let listFlight: Promise<void> | null = null
+    let listTimer: Timer | null = null
+    const stopList = (): void => {
+      isListPolling = false
+      listTimer?.cancel()
+      listTimer = null
+    }
+    const readListOnce = async (): Promise<void> => {
+      const target = await repoTarget()
+      const nowMs = await $.clock.now()
+      const at = new Date(nowMs).toISOString()
+      if (typeof target === 'string') {
+        const none: PrList = { kind: 'error', at, message: target }
+        await update($, listState, () => none)
+        return
+      }
+      const fetched = await fetchList(exec, target.location, target.account.login)
+      await update($, listState, (current: PrList | null) => listAfter(current, fetched, at, target.location, target.account))
+      if (fetched.kind === 'ok' && fetched.rateLimit !== null) {
+        const rateLimit = fetched.rateLimit
+        await update($, rateLimitState, () => rateLimit)
+      }
+    }
+    const runList = (): Promise<void> => {
+      isListPolling = true
+      if (listFlight !== null) return listFlight
+      const flight = (async (): Promise<void> => {
+        try {
+          await readListOnce()
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          const broken: PrList = { kind: 'error', at: new Date(await $.clock.now()).toISOString(), message: message.slice(0, 300) }
+          await update($, listState, (current: PrList | null) => current ?? broken)
+        } finally {
+          listFlight = null
+        }
+        listTimer?.cancel()
+        listTimer = null
+        if (!isListPolling) return
+        const delay = listDelayMs(await read($, listState))
+        listTimer = $.clock.after(delay, () => void tickList())
+      })()
+      listFlight = flight
+      return flight
+    }
+    const tickList = async (): Promise<void> => {
+      if (!(await $.ui.panes()).some(pane => pane.id === LIST_ID)) return stopList()
+      await runList()
+    }
+
+    let countsFlight: Promise<void> | null = null
+    let countsTimer: Timer | null = null
+    const runCounts = (): Promise<void> => {
+      if (countsFlight !== null) return countsFlight
+      const flight = (async (): Promise<void> => {
+        let delay = COUNTS_POLL_MS
+        try {
+          const target = await repoTarget()
+          if (typeof target === 'string') {
+            await update($, countsState, () => null)
+          } else {
+            const nowMs = await $.clock.now()
+            const fetched = await fetchCounts(exec, target.location, target.account.login, () => new Date(nowMs).toISOString())
+            if (fetched.kind === 'ok') {
+              const counts: ListCounts = fetched.counts
+              await update($, countsState, () => counts)
+            } else {
+              // keep the last numbers and try again, never faster than once a minute
+              delay = COUNTS_RETRY_MS
+            }
+          }
+        } catch {
+          delay = COUNTS_RETRY_MS
+        } finally {
+          countsFlight = null
+        }
+        countsTimer?.cancel()
+        countsTimer = $.clock.after(delay, () => void runCounts())
+      })()
+      countsFlight = flight
+      return flight
+    }
+
+    live = {
+      run,
+      runList,
+      stopList,
+      cwdChanged: async () => {
+        await run('cwd')
+        await runCounts()
+        if (isListPolling) await runList()
+      },
+    }
+
+    if (e.isInteractive) void run('start').then(runCounts)
     return next(e)
   })
 
@@ -564,7 +737,13 @@ export const register: Register = (on, options) => {
   on('command.run', async ($, e, next) => {
     if (!activeNames.includes(e.command)) return next(e)
     const argument = e.args.trim().toLowerCase()
-    if (argument === '') return { text: await openPane($, live) }
+    if (argument === 'list' || argument === 'ls') return { text: await openList($, live) }
+    if (argument === '') {
+      // No pull request for the branch (none yet, or a detached HEAD): the list is the useful view.
+      const branch = await read($, snapshotState)
+      if (branch.kind === 'no-pr' || branch.kind === 'detached') return { text: await openList($, live) }
+      return { text: await openPane($, live) }
+    }
     if (/^#?\d+$/.test(argument)) return { text: await selectPr($, live, Number(argument.replace('#', ''))) }
     if (argument === 'back') {
       await back($, live)
@@ -610,7 +789,7 @@ export const register: Register = (on, options) => {
   })
 
   on('classic.CwdChanged', ($, e, next) => {
-    if (live !== null) void live.run('cwd')
+    if (live !== null) void live.cwdChanged()
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -647,9 +826,27 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Closing the pane (its mark, `close`) also drops what it asked to confirm.
+  on('ui.render', { component: 'Pane', requestId: LIST_ID }, async ($, e, next) => {
+    if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
+    try {
+      const view = await readListView($, e.props.bodyColumns, e.surface, palette)
+      return renderList($.ui.resolve(e), view, listHandlersFor($, live))
+    } catch {
+      return next(e)
+    }
+  })
+
+  // Closing the pane (its mark, `close`) also drops what it asked to confirm, and the pick it showed:
+  // the picked pull request is no longer polled once nobody looks at it.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     await update($, pendingState, () => null)
+    await update($, selectedState, () => null)
+    await update($, selectedSnapshotState, () => null)
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('ui.close', { id: LIST_ID }, async ($, e, next) => {
+    if (live !== null) live.stopList()
     return next(e)
   }).catch(($, e, next) => next(e))
 }

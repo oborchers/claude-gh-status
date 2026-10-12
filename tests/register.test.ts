@@ -3,7 +3,7 @@ import type { Engine } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { jobsRunning } from './fixtures/jobs'
-import { prAdmin, prAutoMerge, prFailing, prGreen, prMergeQueue, prRunning } from './fixtures/pr-raw'
+import { prAdmin, prAutoMerge, prFailing, prGreen, prMergeQueue, prNone, prRunning } from './fixtures/pr-raw'
 
 const NOW = Date.parse('2026-01-01T00:10:00Z')
 const PANE = 'gh-status'
@@ -48,6 +48,14 @@ type World = {
   rerunAnswer: (argv: readonly string[]) => ReturnType<typeof done>
   filled: { text: string; mode?: string }[]
   clock: ReturnType<typeof mock.clock>
+  /** The raw pull request nodes the list query answers. */
+  listNodes: Record<string, unknown>[]
+  /** What the list query answers instead of the nodes while set (a failure), until cleared. */
+  listFailure: ReturnType<typeof done> | null
+  /** What the counts query answers. */
+  counts: { open: number; yours: number; requested: number }
+  /** When set, the counts query fails with this. */
+  countsFailure: ReturnType<typeof done> | null
   /** How often the branch lookup (the full refresh) ran. */
   fullFetches(): number
   /** How often a conditional REST request (the fast check) ran. */
@@ -80,6 +88,17 @@ function answer(world: World, argv: readonly string[]) {
   if (args[0] === 'api') {
     const query = args.find(arg => arg.startsWith('query=')) ?? ''
     if (query.includes('mutation')) return world.mutationAnswer
+    if (query.includes('$yours')) {
+      if (world.countsFailure !== null) return world.countsFailure
+      const { open, yours, requested } = world.counts
+      return done(0, JSON.stringify({ data: { open: { issueCount: open }, yours: { issueCount: yours }, requested: { issueCount: requested }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T08:02:58Z' } } }))
+    }
+    if (query.includes('$q: String!')) {
+      if (world.listFailure !== null) return world.listFailure
+      const isRequested = !query.includes('statusCheckRollup')
+      const nodes = isRequested ? [] : world.listNodes
+      return done(0, JSON.stringify({ data: { search: { issueCount: nodes.length, nodes }, rateLimit: { cost: 3, remaining: 4000, resetAt: '2026-10-12T08:02:58Z' } } }))
+    }
     if (query.includes('$branch')) return done(0, JSON.stringify(world.fixture.list))
     if (query.includes('$number: Int!')) {
       const number = Number(args.find(arg => arg.startsWith('number='))?.slice('number='.length))
@@ -125,6 +144,10 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     rerunAnswer: () => done(0),
     filled: [],
     clock: mock.clock(on, { now: NOW }),
+    listNodes: [],
+    listFailure: null,
+    counts: { open: 0, yours: 0, requested: 0 },
+    countsFailure: null,
     fullFetches: () => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$branch'))).length,
     fastRequests: () => world.argvs.filter(argv => argv[1] === 'api' && argv.includes('-i')).length,
     numberLookups: () =>
@@ -199,7 +222,7 @@ describe('session start', () => {
     const world = setup(on)
     await start($, world)
     expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
     expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
@@ -1487,5 +1510,260 @@ describe('a pull request picked from the list', () => {
       await band.unmount()
       await pane.unmount()
     })
+  })
+})
+
+// The list of open pull requests and the band's counts.
+
+const LIST = 'gh-status-list'
+
+/** Raw list nodes: #14551 (oldest) to #14580 (newest), every fifth one a draft, all by someone else. */
+const listNodes = (total: number): Record<string, unknown>[] =>
+  Array.from({ length: total }, (_, index) => ({
+    id: `PR_${index}`,
+    number: 14551 + index,
+    title: `Change ${14551 + index}`,
+    url: `https://github.com/cli/cli/pull/${14551 + index}`,
+    isDraft: index % 5 === 0,
+    createdAt: `2026-10-01T10:${String(index).padStart(2, '0')}:00Z`,
+    author: { login: 'anna' },
+    labels: { nodes: [] },
+    reviewDecision: null,
+    reviewRequests: { nodes: [] },
+    comments: { totalCount: 0 },
+    commits: { nodes: [] },
+  }))
+
+const listQueries = (world: World) => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('statusCheckRollup') && arg.includes('$q: String!')))
+const countsQueries = (world: World) => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$yours')))
+
+const showList = ($: Engine) =>
+  $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, title: 'Open PRs', scroll: { offset: 0, bodyRows: 40 } } })
+
+/** A world whose branch has no pull request and whose repository has 30 open ones. */
+const listWorld = (on: On, total = 30): World => {
+  const world = setup(on, prNone)
+  world.listNodes = listNodes(total)
+  world.others[14580] = prGreen
+  return world
+}
+
+describe('the list of open pull requests', () => {
+  test('/pr list and /pr ls open the list pane with the keyboard, sized to the page, and read the list', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    const ran = await runPr($, 'list')
+    await world.clock.settle()
+    expect(world.opened).toContainEqual(expect.objectContaining({ id: LIST, title: 'Open PRs', focus: true }))
+    const rows = (world.opened[0] as { rows?: number }).rows
+    expect(rows).toBeGreaterThanOrEqual(6)
+    expect(rows).toBeLessThanOrEqual(40)
+    expect(ran.text).toContain('Open PRs')
+    expect(listQueries(world)).toHaveLength(1)
+    await runPr($, 'ls')
+    await world.clock.settle()
+    expect(world.opened.filter(opened => opened.id === LIST)).toHaveLength(2)
+  })
+
+  test('a branch without a pull request: /pr opens the list', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($)
+    await world.clock.settle()
+    expect(world.opened.map(opened => opened.id)).toEqual([LIST])
+  })
+
+  test('a branch with a pull request: /pr opens the detail', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    await runPr($)
+    await world.clock.settle()
+    expect(world.opened.map(opened => opened.id)).toEqual([PANE])
+  })
+
+  test('the usage and the command hint name list', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    expect((await runPr($, 'bogus')).text).toContain('list (ls)')
+    expect(world.registered[0]?.argumentHint).toContain('list')
+  })
+
+  test('the render hook draws the rows of the first page, newest first', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    expect(await sees(ui, /#14556\b/)).toBe(true)
+    expect(await sees(ui, /#14551\b/)).toBe(false)
+    await ui.unmount()
+  })
+
+  test('pressing a row selects that pull request, opens the detail with the keyboard and keeps the list open', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'row-14580' })
+    await world.clock.settle()
+    expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
+    expect(world.closed).not.toContain(LIST)
+    expect(world.numberLookups()).toContain(14580)
+    const detail = await showPane($)
+    expect(await sees(detail, /PR #14580 \(selected\)/)).toBe(true)
+    await detail.unmount()
+    await ui.unmount()
+  })
+
+  test('n and p page through the list and stop at both ends', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'prev' })
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    await ui.press({ key: 'next' })
+    expect(await sees(ui, /#14551\b/)).toBe(true)
+    expect(await sees(ui, /#14580\b/)).toBe(false)
+    await ui.press({ key: 'next' })
+    expect(await sees(ui, /#14551\b/)).toBe(true)
+    await ui.press({ key: 'prev' })
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    await ui.unmount()
+  })
+
+  test('h hides the drafts and goes back to the first page', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'next' })
+    await ui.press({ key: 'drafts' })
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    expect(await sees(ui, /#14556\b/)).toBe(false)
+    await ui.press({ key: 'drafts' })
+    expect(await sees(ui, /#14556\b/)).toBe(true)
+    await ui.unmount()
+  })
+
+  test('the list is read every 60 seconds while its pane is open, and not before or after', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await world.clock.advance(120_000)
+    expect(listQueries(world)).toHaveLength(0)
+    await runPr($, 'list')
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(1)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(2)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(3)
+    const ui = await showList($)
+    await ui.press({ key: 'close' })
+    await world.clock.settle()
+    expect(world.closed).toContain(LIST)
+    await world.clock.advance(300_000)
+    expect(listQueries(world)).toHaveLength(3)
+    await ui.unmount()
+  })
+
+  test('the refresh button reads the list now', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    await ui.press({ key: 'refresh' })
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('a transient failure keeps the last list and retries after 15 s, then 30 s', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    world.listFailure = done(1, '', 'HTTP 502 Bad Gateway')
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(2)
+    const ui = await showList($)
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    await world.clock.advance(16_000)
+    expect(listQueries(world)).toHaveLength(3)
+    await world.clock.advance(20_000)
+    expect(listQueries(world)).toHaveLength(3)
+    world.listFailure = null
+    await world.clock.advance(15_000)
+    expect(listQueries(world)).toHaveLength(4)
+    expect(await sees(ui, /#14580\b/)).toBe(true)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(5)
+    await ui.unmount()
+  })
+
+  test('the counts are read at the start, every 5 minutes and after a directory change', async ($, on) => {
+    const world = listWorld(on)
+    world.counts = { open: 30, yours: 2, requested: 3 }
+    await start($, world)
+    expect(countsQueries(world)).toHaveLength(1)
+    await world.clock.advance(290_000)
+    expect(countsQueries(world)).toHaveLength(1)
+    world.counts = { open: 31, yours: 2, requested: 4 }
+    await world.clock.advance(11_000)
+    expect(countsQueries(world)).toHaveLength(2)
+    await $.classic.CwdChanged({ old_cwd: '/a', new_cwd: '/work/cli' })
+    await world.clock.settle()
+    expect(countsQueries(world)).toHaveLength(3)
+  })
+
+  test('a failed counts read tries again no sooner than a minute later', async ($, on) => {
+    const world = listWorld(on)
+    world.counts = { open: 30, yours: 2, requested: 3 }
+    await start($, world)
+    world.countsFailure = done(1, '', 'HTTP 502 Bad Gateway')
+    await world.clock.advance(301_000)
+    expect(countsQueries(world)).toHaveLength(2)
+    await world.clock.advance(58_000)
+    expect(countsQueries(world)).toHaveLength(2)
+    await world.clock.advance(3_000)
+    expect(countsQueries(world)).toHaveLength(3)
+  })
+
+  test('closing the detail pane drops the selection: the picked pull request is no longer polled', async ($, on) => {
+    const world = setup(on, prFailing)
+    world.others[14580] = prGreen
+    await start($, world)
+    await runPr($, '14580')
+    await world.clock.settle()
+    expect(world.numberLookups().length).toBeGreaterThan(0)
+    await runPr($, 'close')
+    await world.clock.settle()
+    expect(world.closed).toContain(PANE)
+    const lookups = world.numberLookups().length
+    await world.clock.advance(180_000)
+    expect(world.numberLookups()).toHaveLength(lookups)
+  })
+
+  test('no list handler ever writes to GitHub', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const ui = await showList($)
+    for (const key of ['next', 'prev', 'drafts', 'refresh', 'row-14580', 'back']) {
+      await ui.press({ key })
+      await world.clock.settle()
+    }
+    await ui.press({ key: 'close' })
+    await world.clock.settle()
+    expect(world.closed).toContain(LIST)
+    expect(writes(world)).toEqual([])
+    expect(reruns(world)).toEqual([])
+    await ui.unmount()
   })
 })
