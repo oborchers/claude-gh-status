@@ -255,6 +255,7 @@ function footerButtons(view: ListView, handlers: ListHandlers, hasNext: boolean,
   if (isList) buttons.push({ key: 'list-drafts', hotkey: 'h', label: view.hideDrafts ? 'show drafts' : 'hide drafts', onPress: () => handlers.toggleDrafts() })
   buttons.push({ key: 'list-refresh', hotkey: 'r', label: 'refresh', onPress: () => handlers.refresh() })
   if (view.selectedNumber !== null) buttons.push({ key: 'list-back', hotkey: 'b', label: 'back to branch PR', onPress: () => handlers.back() })
+  buttons.push({ key: 'list-close', hotkey: 'x', label: 'close', onPress: () => handlers.closeList() })
   return buttons
 }
 

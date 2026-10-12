@@ -141,7 +141,7 @@ describe('renderList states', () => {
         const lines = await linesOf(ui)
         expect(lines[0]).toBe('Loading pull requests…')
         expect(lines).toHaveLength(2)
-        expect(await hotkeysOf(ui)).toEqual(['r'])
+        expect(await hotkeysOf(ui)).toEqual(['r', 'x'])
         await ui.unmount()
       }
     }
@@ -203,13 +203,13 @@ describe('renderList header, groups and pages', () => {
   test('page 1 has next, page 2 has previous, and the text follows', async ($, on) => {
     const rig = createRig(on)
     const first = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100), handlersFor([]))
-    expect(await hotkeysOf(first)).toEqual(['n', 'h', 'r'])
+    expect(await hotkeysOf(first)).toEqual(['n', 'h', 'r', 'x'])
     expect(await textOf(first)).toContain('n: next')
     expect(await textOf(first)).not.toContain('p: previous')
     const second = await rig.list($, 'terminal', viewOf(listOf(crowd()), 100, { page: 1 }), handlersFor([]))
     const lines = await linesOf(second)
     expect(lines[0]).toBe('30 open · 26 to 30 · page 2 of 2 · @me')
-    expect(await hotkeysOf(second)).toEqual(['p', 'h', 'r'])
+    expect(await hotkeysOf(second)).toEqual(['p', 'h', 'r', 'x'])
     expect(await textOf(second)).toContain('p: previous')
     expect(await textOf(second)).not.toContain('n: next')
   })
@@ -217,7 +217,7 @@ describe('renderList header, groups and pages', () => {
   test('a single page has neither', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.list($, 'terminal', viewOf(listOf(crowd(2)), 100), handlersFor([]))
-    expect(await hotkeysOf(ui)).toEqual(['h', 'r'])
+    expect(await hotkeysOf(ui)).toEqual(['h', 'r', 'x'])
   })
 
   test('a page past the end is clamped', async ($, on) => {
