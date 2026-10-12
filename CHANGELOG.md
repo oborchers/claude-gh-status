@@ -5,7 +5,40 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.4] - 2026-10-12
+
+### Changed
+
+- The marketplace is named `claude-gh-status` (was `oborchers`), so it no longer collides with other marketplaces of the same owner. The plugin id is now `gh-status@claude-gh-status`. To move an existing install: `claude plugin uninstall gh-status@oborchers`, `claude plugin marketplace remove oborchers`, then install again with the line from the README.
+
+### Fixed
+
+- `/pr` was unreachable in a project with a skill or command of the same name (for example `.claude/skills/pr`): the typeahead showed only the skill. The mod now registers its command only when the name is free, always also registers `/gh-pr`, and shows a toast once per session when the configured name is taken. New setting `command` (Command name, default `pr`) changes the name; usage and error texts show the name in use.
+
+## [0.1.3] - 2026-10-12
+
+### Fixed
+
+- Checks that did not run (skipped, neutral) are listed below the ones that ran.
+- A workflow that ran twice on the same commit no longer lists every check twice: only the latest run per workflow and check name is shown and counted, as GitHub judges mergeability.
+
+## [0.1.2] - 2026-10-12
+
+### Fixed
+
+- GitHub's GraphQL errors "Something went wrong while executing your query" and "We couldn't respond to your request in time" count as temporary problems: the last data stays on screen and the mod retries after 15, 30, 60 s.
+- README: the pane docks from 110 columns in the fullscreen layout.
+
+## [0.1.1] - 2026-10-12
+
+### Fixed
+
+- A GitHub outage no longer replaces the band and pane with `gh-status: gh: HTTP 504` and waits two minutes. HTTP 500, 502, 503 and 504 and answers that are not JSON (an HTML error page) count as temporary problems. With a pull request on screen it stays, marked `GitHub unavailable (504), retrying` in the band and `showing last data from 2 min ago, GitHub unavailable (504), retrying in 15 s` in the pane. Without earlier data the line reads `GitHub is having trouble (504), retrying in 15 s`. Temporary failures are retried after 15 s, 30 s, then every 60 s, and the wait resets after the first success.
+- A write that ends in a 5xx is reported as possibly applied, like a timeout.
+
+## [0.1.0] - 2026-10-12
+
+First release.
 
 ### Added
 
@@ -20,5 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Account selection per repository without `gh auth switch`.
 - Settings: account per owner, fast and idle intervals, toasts, color scheme.
 - Marketplace file for installing with `/plugin install`.
+- Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
+- Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments by creation or edit time is shown, so a review bot that updates an older comment in place surfaces. Edits within 60 seconds of creation (automatic post-processing by bots) do not count. The fast check watches `pulls/{n}/comments` too; edits are seen within the first 100 comments of a list.
 
+[0.1.4]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.4
+[0.1.3]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.3
+[0.1.2]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.2
+[0.1.1]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.1
 [0.1.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.0

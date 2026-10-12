@@ -157,8 +157,102 @@ describe('snapshotLine', () => {
   })
 })
 
+describe('transient problem text', () => {
+  const location = makeLocation()
+  const at = '2026-01-01T00:09:00Z'
+  const problem = { reason: '504', since: at, triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 }
+
+  test('an error without earlier data reads as trouble with a countdown', () => {
+    const snapshot: Snapshot = { kind: 'error', at, message: 'gh: HTTP 504', location, problem }
+    expect(snapshotLine(snapshot, 'pane')?.text).toBe('GitHub is having trouble (504), retrying in 15 s')
+    expect(snapshotLine(snapshot, 'band', NOW)?.text).toBe('GitHub is having trouble (504), retrying in 5 s')
+    expect(snapshotLine(snapshot, 'band', NOW + 20_000)?.text).toBe('GitHub is having trouble (504), retrying')
+    expect(snapshotLine(snapshot, 'band')?.text).not.toContain('gh: HTTP 504')
+  })
+
+  test('an error without a marker keeps the raw message', () => {
+    expect(snapshotLine({ kind: 'error', at, message: 'GraphQL: boom', location }, 'band')?.text).toBe('gh-status: GraphQL: boom')
+  })
+})
+
+describe('stale data hint', () => {
+  const stale = { reason: '504', since: '2026-01-01T00:08:00Z', triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 }
+  const staleView = (columns: number, overrides: Partial<PullRequest> = {}): View => {
+    const base = makeSnapshot(makePr({ checks: [makeCheck()], ...overrides }))
+    const snapshot: Snapshot = base.kind === 'pr' ? { ...base, at: '2026-01-01T00:08:00Z', stale } : base
+    return viewFor(snapshot, columns)
+  }
+
+  test('the band shows the hint before the account on every surface', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const ui = await rig.band($, surface, staleView(120), handlersFor([]))
+      const text = await textOf(ui)
+      expect(text).toContain('GitHub unavailable (504), retrying')
+      expect(text.indexOf('GitHub unavailable')).toBeLessThan(text.indexOf('@me'))
+      await ui.unmount()
+    }
+  })
+
+  test('the band without a marker has no hint', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.band($, 'terminal', prView({ checks: [makeCheck()] }, 120), handlersFor([]))
+    expect(await textOf(ui)).not.toContain('GitHub unavailable')
+  })
+
+  test('the band drops the account first, then the hint, and fits the width', async ($, on) => {
+    const rig = createRig(on)
+    const seen: { hasHint: boolean; hasAccount: boolean }[] = []
+    for (const columns of [120, 90, 70, 60, 50, 40, 30]) {
+      const ui = await rig.band($, 'terminal', staleView(columns), handlersFor([]))
+      const text = await textOf(ui)
+      for (const row of text.split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      seen.push({ hasHint: text.includes('GitHub unavailable'), hasAccount: text.includes('@me') })
+      await ui.unmount()
+    }
+    expect(seen[0]).toEqual({ hasHint: true, hasAccount: true })
+    for (const entry of seen) if (entry.hasAccount) expect(entry.hasHint).toBe(true)
+    expect(seen.at(-1)?.hasHint).toBe(false)
+  })
+
+  test('the pane says how old the data is, what is wrong and when it retries', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const ui = await rig.pane($, surface, staleView(100), handlersFor([]))
+      const text = await textOf(ui)
+      expect(text).toContain('showing last data from 2 min ago, GitHub unavailable (504), retrying in 5 s')
+      await ui.unmount()
+    }
+  })
+
+  test('the pane line is one row under the header, counted in the height, and fits narrow widths', async ($, on) => {
+    const rig = createRig(on)
+    const withMarker = staleView(40)
+    expect(paneRowCount(withMarker)).toBeGreaterThanOrEqual(paneRowCount(prView({ checks: [makeCheck()] }, 40)))
+    const ui = await rig.pane($, 'terminal', withMarker, handlersFor([]))
+    const rows = (await textOf(ui)).split('\n')
+    const at = rows.findIndex((row) => row.startsWith('showing last data'))
+    expect(at).toBeGreaterThan(0)
+    expect(rows[at - 1]).toContain('refreshed')
+    for (const row of rows) expect(cellWidth(row)).toBeLessThanOrEqual(40)
+  })
+
+  test('the no-data error draws the friendly line in band and pane', async ($, on) => {
+    const rig = createRig(on)
+    const error: Snapshot = { kind: 'error', at: '2026-01-01T00:09:50Z', message: 'gh: HTTP 504', location: makeLocation(), problem: { reason: '504', since: '2026-01-01T00:09:50Z', triedAt: '2026-01-01T00:09:50Z', retryInMs: 15_000 } }
+    for (const surface of SURFACES) {
+      const band = await rig.band($, surface, viewFor(error, 80), handlersFor([]))
+      expect(await textOf(band)).toBe('GitHub is having trouble (504), retrying in 5 s')
+      const pane = await rig.pane($, surface, viewFor(error, 80), handlersFor([]))
+      expect(await textOf(pane)).toContain('GitHub is having trouble (504), retrying in 5 s')
+      await band.unmount()
+      await pane.unmount()
+    }
+  })
+})
+
 describe('sortChecks', () => {
-  test('puts required first, then failed, running, queued, the rest, and drops stale', () => {
+  test('puts required first, then failed, running, queued, passed, checks that did not run last, and drops stale', () => {
     const checks: Check[] = [
       makeCheck({ name: 'ok-optional' }),
       makeCheck({ name: 'queued-optional', state: 'queued' }),
@@ -168,6 +262,9 @@ describe('sortChecks', () => {
       makeCheck({ name: 'failed-required', isRequired: true, state: 'failure' }),
       makeCheck({ name: 'old', state: 'stale' }),
       makeCheck({ name: 'running-optional', state: 'running' }),
+      makeCheck({ name: 'skipped-early', state: 'skipped' }),
+      makeCheck({ name: 'ok-late' }),
+      makeCheck({ name: 'neutral-optional', state: 'neutral' }),
     ]
     expect(sortChecks(checks).map((check) => check.name)).toEqual([
       'failed-required',
@@ -177,6 +274,9 @@ describe('sortChecks', () => {
       'running-optional',
       'queued-optional',
       'ok-optional',
+      'ok-late',
+      'skipped-early',
+      'neutral-optional',
     ])
   })
 })
@@ -301,7 +401,7 @@ describe('renderBand', () => {
         reviewDecision: 'review-required',
         mergeStateStatus: 'blocked',
         reviewRequests: [{ reviewer: 'ben', isTeam: false }],
-        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', url: 'https://x/c' } }],
+        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', editedAt: null, url: 'https://x/c' } }],
       },
       160,
       [],
@@ -337,7 +437,7 @@ describe('renderBand', () => {
           reviewDecision: 'review-required',
           mergeStateStatus: 'blocked',
           reviewRequests: [{ reviewer: 'someone-with-a-long-login', isTeam: false }],
-          threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', url: 'https://x/c' } }],
+          threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'ben', createdAt: '2026-01-01T00:09:30Z', editedAt: null, url: 'https://x/c' } }],
         },
         columns,
       )
@@ -467,10 +567,10 @@ describe('renderPane', () => {
         mergeStateStatus: 'blocked',
         reviewRequests: [{ reviewer: 'ben', isTeam: false }, { reviewer: 'acme/core', isTeam: true }],
         viewerCanMergeAsAdmin: true,
-        lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/last' },
+        lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/last' },
         threads: [
-          { isResolved: false, isOutdated: false, path: 'src/ui/band.tsx', line: 12, last: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/t1' } },
-          { isResolved: false, isOutdated: true, path: 'old.ts', line: 3, last: { author: 'ben', createdAt: '2025-12-30T00:06:00Z', url: 'https://x/t2' } },
+          { isResolved: false, isOutdated: false, path: 'src/ui/band.tsx', line: 12, last: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/t1' } },
+          { isResolved: false, isOutdated: true, path: 'old.ts', line: 3, last: { author: 'ben', createdAt: '2025-12-30T00:06:00Z', editedAt: null, url: 'https://x/t2' } },
         ],
       },
       columns,
@@ -601,9 +701,23 @@ describe('renderPane', () => {
     }
   })
 
+  test('edited comments read "edited" relative to the edit time, in rows and the last comment line', async ($, on) => {
+    const rig = createRig(on)
+    const view = prView(
+      {
+        lastComment: { author: 'bot', createdAt: '2026-01-01T00:00:00Z', editedAt: '2026-01-01T00:08:00Z', url: 'https://x/last' },
+        threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: { author: 'bot', createdAt: '2026-01-01T00:00:00Z', editedAt: '2026-01-01T00:08:00Z', url: 'https://x/t1' } }],
+      },
+      80,
+    )
+    const text = await textOf(await rig.pane($, 'terminal', view, handlersFor([])))
+    expect(text).toContain('💬 a.ts:1 @bot edited 2 min ago')
+    expect(text).toContain('Last comment @bot edited 2 min ago')
+  })
+
   test('summarizes new activity since the last look', async ($, on) => {
     const rig = createRig(on)
-    const view = prView({ lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', url: 'https://x/last' } }, 80, [], '2026-01-01T00:00:00Z')
+    const view = prView({ lastComment: { author: 'ben', createdAt: '2026-01-01T00:06:00Z', editedAt: null, url: 'https://x/last' } }, 80, [], '2026-01-01T00:00:00Z')
     const text = await textOf(await rig.pane($, 'terminal', view, handlersFor([])))
     expect(text).toContain('1 new since you looked')
   })
@@ -1156,5 +1270,73 @@ describe('paneRowCount', () => {
   test('a PR without a status asks for a few rows', () => {
     const view = viewFor({ kind: 'loading', at: '' } as Snapshot, 80)
     expect(paneRowCount(view)).toBe(6)
+  })
+})
+
+describe('the retry failed button', () => {
+  const rerunnable = [makeCheck({ name: 'lint', state: 'failure', runId: 70 }), makeCheck({ name: 'build', state: 'success', runId: 71 })]
+  const inProgress = [makeCheck({ name: 'lint', state: 'failure', runId: 70 }), makeCheck({ name: 'test', state: 'running', runId: 70 })]
+
+  test('the band shows t only when a run can be re-run and the handler exists, on both surfaces', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const handlers = handlersFor(calls, { rerunFailed: () => void calls.push('rerunFailed') })
+      const shown = await rig.band($, surface, prView({ checks: rerunnable }, 160), handlers)
+      expect(hotkeysOf(await shown.findAll({ type: 'Button' }))).toContain('t')
+      expect(await textOf(shown)).toContain('t: retry failed')
+      await shown.press({ key: 'band-retry-failed' })
+      expect(calls).toEqual(['rerunFailed'])
+      await shown.unmount()
+
+      const running = await rig.band($, surface, prView({ checks: inProgress }, 160), handlers)
+      expect(hotkeysOf(await running.findAll({ type: 'Button' }))).not.toContain('t')
+      await running.unmount()
+
+      const noHandler = await rig.band($, surface, prView({ checks: rerunnable }, 160), handlersFor([]))
+      expect(hotkeysOf(await noHandler.findAll({ type: 'Button' }))).not.toContain('t')
+      await noHandler.unmount()
+
+      const noRunId = await rig.band($, surface, prView({ checks: [makeCheck({ name: 'ext', state: 'failure' })] }, 160), handlers)
+      expect(hotkeysOf(await noRunId.findAll({ type: 'Button' }))).not.toContain('t')
+      await noRunId.unmount()
+    }
+  })
+
+  test('the band drops it first when the row is tight', async ($, on) => {
+    const rig = createRig(on)
+    const handlers = handlersFor([], { ciToClaude: () => {}, rerunFailed: () => {} })
+    const wide = await rig.band($, 'terminal', prView({ checks: rerunnable }, 160), handlers)
+    expect(hotkeysOf(await wide.findAll({ type: 'Button' }))).toEqual(['d', 'o', 'f', 't'])
+    await wide.unmount()
+    for (const columns of [40, 60, 80]) {
+      const ui = await rig.band($, 'terminal', prView({ checks: rerunnable }, columns), handlers)
+      const keys = hotkeysOf(await ui.findAll({ type: 'Button' }))
+      if (keys.includes('t')) expect(keys).toEqual(['d', 'o', 'f', 't'])
+      for (const row of rowsOf(await ui.drawn())) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+      await ui.unmount()
+    }
+  })
+
+  test('the pane shows t next to fix ci only when a run can be re-run, and pressing it calls the handler', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: string[] = []
+      const handlers = handlersFor(calls, { ciToClaude: () => {}, rerunFailed: () => void calls.push('rerunFailed') })
+      const shown = await rig.pane($, surface, prView({ checks: rerunnable }, 100), handlers)
+      const keys = hotkeysOf(await shown.findAll({ type: 'Button' }))
+      expect(keys.indexOf('t')).toBe(keys.indexOf('f') + 1)
+      await shown.press({ key: 'rerun-failed' })
+      expect(calls).toEqual(['rerunFailed'])
+      await shown.unmount()
+
+      const running = await rig.pane($, surface, prView({ checks: inProgress }, 100), handlers)
+      expect(hotkeysOf(await running.findAll({ type: 'Button' }))).not.toContain('t')
+      await running.unmount()
+
+      const noHandler = await rig.pane($, surface, prView({ checks: rerunnable }, 100), handlersFor([], { ciToClaude: () => {} }))
+      expect(hotkeysOf(await noHandler.findAll({ type: 'Button' }))).not.toContain('t')
+      await noHandler.unmount()
+    }
   })
 })

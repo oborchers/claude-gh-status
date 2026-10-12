@@ -21,6 +21,10 @@ type Fixture = { list: unknown; detail: unknown }
 type World = {
   argvs: string[][]
   registered: { name: string; argumentHint?: string; description: string }[]
+  /** What `$.command.list()` answers: the commands and skills that exist before the mod registers. */
+  /** When set, `$.command.list()` rejects. */
+  listThrows: boolean
+  existing: { name: string; description: string; source: 'builtin' | 'plugin' | 'user' | 'mcp'; plugin?: string }[]
   opened: { id: string; title?: string }[]
   closed: string[]
   toasts: string[]
@@ -36,6 +40,8 @@ type World = {
   /** What `gh pr merge` and the GraphQL mutations answer. */
   mergeAnswer: ReturnType<typeof done>
   mutationAnswer: ReturnType<typeof done>
+  /** What `gh run rerun` answers, per call. */
+  rerunAnswer: (argv: readonly string[]) => ReturnType<typeof done>
   filled: { text: string; mode?: string }[]
   clock: ReturnType<typeof mock.clock>
   /** How often the branch lookup (the full refresh) ran. */
@@ -58,6 +64,7 @@ function answer(world: World, argv: readonly string[]) {
     return done(0, JSON.stringify({ hosts: { 'github.com': [{ state: 'success', active: true, login: 'me' }] } }))
   }
   if (args[0] === 'auth' && args[1] === 'token') return done(0, 'tok\n')
+  if (args[0] === 'run' && args[1] === 'rerun') return world.rerunAnswer(argv)
   if (args[0] === 'run' && args[1] === 'view') return done(0, JSON.stringify(jobsRunning))
   if (args[0] === 'api' && args.includes('-i')) return done(0, 'HTTP/2.0 200 OK\netag: W/"stable"\n\n{}')
   if (args[0] === 'pr' && args[1] === 'merge') {
@@ -79,6 +86,8 @@ function setup(on: On, fixture: Fixture = prRunning): World {
   const world: World = {
     argvs: [],
     registered: [],
+    existing: [],
+    listThrows: false,
     opened: [],
     closed: [],
     toasts: [],
@@ -90,6 +99,7 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     afterMerge: null,
     mergeAnswer: done(0, 'merged\n'),
     mutationAnswer: done(0, '{"data":{}}'),
+    rerunAnswer: () => done(0),
     filled: [],
     clock: mock.clock(on, { now: NOW }),
     fullFetches: () => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$branch'))).length,
@@ -102,6 +112,10 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     return { value: answer(world, e.argv) }
   })
   on('session.cwd', () => ({ value: '/work/cli' }))
+  on('command.list', () => {
+    if (world.listThrows) throw new Error('no list')
+    return { value: world.existing }
+  })
   on('command.register', (_$, e) => {
     world.registered.push(e)
     return { value: { command: e.name } }
@@ -150,14 +164,16 @@ async function start($: Engine, world: World) {
   await world.clock.settle()
 }
 
-const runPr = ($: Engine, args = '') => $.command.run({ command: 'pr', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+const runCommand = ($: Engine, command: string, args = '') => $.command.run({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 160 } })
+const runPr = ($: Engine, args = '') => runCommand($, 'pr', args)
 
 describe('session start', () => {
   test('registers the pr command and starts a first refresh', async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered).toHaveLength(1)
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | merge | queue | dequeue | auto | admin (or m | q | dq | a | x)' })
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: 'refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin (or rr | m | q | dq | a | x)' })
+    expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
 
@@ -165,8 +181,123 @@ describe('session start', () => {
     const world = setup(on)
     await $.session.start({ cwd: '/work/cli', surface: null, isInteractive: false })
     await world.clock.settle()
-    expect(world.registered).toHaveLength(1)
+    expect(world.registered).toHaveLength(2)
     expect(world.fullFetches()).toBe(0)
+  })
+})
+
+describe('the command name', () => {
+  const skill = { name: 'pr', description: 'Open a pull request', source: 'user' as const }
+
+  test('a skill named pr hides the mod: only gh-pr is registered, with one toast', async ($, on) => {
+    const world = setup(on)
+    world.existing = [skill]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts.filter(text => text.includes('is taken here'))).toEqual(['gh-status: /pr is taken here (skill or command), use /gh-pr'])
+  })
+
+  test('a built-in or a plugin command of that name counts as taken too', async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'other' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+  })
+
+  test('an entry of this plugin itself is not a collision', async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'gh-status' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('a second session.start does not take its own registration for a collision', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    world.existing = [{ name: 'pr', description: 'x', source: 'plugin' }, { name: 'gh-pr', description: 'x', source: 'plugin' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'pr', 'gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('a failing command.list registers both names', async ($, on) => {
+    const world = setup(on)
+    world.listThrows = true
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+  })
+
+  test('the configured name prs is registered next to gh-pr and answers', { options: { command: 'prs' } }, async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr'])
+    const ran = await runCommand($, 'prs')
+    expect(ran.text).toContain('PR pane opened')
+    const usage = await runCommand($, 'prs', 'nonsense')
+    expect(usage.text).toContain('Usage: /prs [')
+  })
+
+  test('a taken configured name toasts with that name', { options: { command: 'prs' } }, async ($, on) => {
+    const world = setup(on)
+    world.existing = [{ name: 'prs', description: 'x', source: 'user' }]
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts).toContain('gh-status: /prs is taken here (skill or command), use /gh-pr')
+  })
+
+  for (const invalid of ['', 'PR', 'a b', '/pr', 'x'.repeat(33), 'p_r']) {
+    test(`the invalid name ${JSON.stringify(invalid)} falls back to pr`, { options: { command: invalid } }, async ($, on) => {
+      const world = setup(on)
+      await start($, world)
+      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    })
+  }
+
+  test('gh-pr as the configured name registers once', { options: { command: 'gh-pr' } }, async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.toasts).toEqual([])
+  })
+
+  test('both names open the pane and run subcommands', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    for (const name of ['pr', 'gh-pr']) {
+      expect((await runCommand($, name)).text).toContain('PR pane opened')
+      expect((await runCommand($, name, 'close')).text).toBe('PR pane closed.')
+      expect((await runCommand($, name, 'copy')).text).toContain('Copied')
+      expect((await runCommand($, name, 'bogus')).text).toContain(`Usage: /${name} [`)
+    }
+  })
+
+  test('with pr taken, /pr is left to the skill: the hook passes it on untouched', async ($, on) => {
+    const world = setup(on)
+    world.existing = [skill]
+    const seen: string[] = []
+    on('command.run', (_$, e) => {
+      seen.push(`${e.command} ${e.args}`)
+      return { text: 'the skill answered' }
+    })
+    await start($, world)
+    expect((await runPr($, 'refresh')).text).toBe('the skill answered')
+    expect(seen).toEqual(['pr refresh'])
+    expect(world.opened).toEqual([])
+    expect((await runCommand($, 'gh-pr')).text).toContain('PR pane opened')
+  })
+
+  test('foreign commands pass through untouched', async ($, on) => {
+    const world = setup(on)
+    const seen: string[] = []
+    on('command.run', (_$, e) => {
+      seen.push(`${e.command} ${e.args}`)
+      return { text: `foreign ${e.command}` }
+    })
+    await start($, world)
+    expect((await runCommand($, 'compact', 'now')).text).toBe('foreign compact')
+    expect(seen).toEqual(['compact now'])
+    expect(world.opened).toEqual([])
   })
 })
 
@@ -418,6 +549,8 @@ function edited(fixture: unknown, patch: Record<string, unknown>): Fixture {
 }
 
 /** Every argv that would write to GitHub: a merge or a GraphQL mutation. */
+const reruns = (world: World) => world.argvs.filter(argv => argv[0] === 'gh' && argv[1] === 'run' && argv[2] === 'rerun')
+
 const writes = (world: World) =>
   world.argvs.filter(argv => argv[0] === 'gh' && ((argv[1] === 'pr' && argv[2] === 'merge') || argv.some(arg => arg.startsWith('query=mutation'))))
 
@@ -1019,6 +1152,65 @@ describe('CI to Claude', () => {
     await start($, world)
     expect((await runPr($, 'fix')).text).toBe('No failed checks.')
     expect(world.filled).toEqual([])
+  })
+})
+
+describe('re-run failed jobs', () => {
+  test('/pr rerun and /pr rr run only the failed jobs of each failed run, once, and never merge', async ($, on) => {
+    const world = setup(on, prFailing)
+    await start($, world)
+    for (const argument of ['rerun', 'rr']) {
+      const before = reruns(world).length
+      const ran = await runPr($, argument)
+      await world.clock.settle()
+      expect(ran.text).toMatch(/^PR #14640: re-running failed jobs in \d+ runs?$/)
+      const fresh = reruns(world).slice(before)
+      expect(fresh.length).toBeGreaterThan(0)
+      for (const argv of fresh) {
+        expect(argv).toEqual(['gh', 'run', 'rerun', argv[3], '--failed', '-R', 'cli/cli'])
+        expect(argv[3]).toMatch(/^\d+$/)
+      }
+      expect(new Set(fresh.map(argv => argv[3])).size).toBe(fresh.length)
+    }
+    expect(world.toasts.some(text => text.startsWith('PR #14640: re-running failed jobs in'))).toBe(true)
+    expect(world.argvs.some(argv => argv.includes('merge'))).toBe(false)
+    expect(writes(world)).toEqual([])
+    expect(world.opened).toEqual([])
+  })
+
+  test('says so and runs nothing when no run can be re-run', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    expect((await runPr($, 'rerun')).text).toBe('No failed runs to re-run.')
+    expect(reruns(world)).toEqual([])
+  })
+
+  test('a gh failure is reported with its message', async ($, on) => {
+    const world = setup(on, prFailing)
+    world.rerunAnswer = () => done(1, '', 'HTTP 403: Must have admin rights to Repository.\n')
+    await start($, world)
+    const ran = await runPr($, 'rr')
+    await world.clock.settle()
+    expect(ran.text).toBe('PR #14640: could not re-run, HTTP 403: Must have admin rights to Repository.')
+    expect(world.toasts).toContain(ran.text)
+  })
+
+  test('the pane button does the same, and a press during a re-run is dropped', async ($, on) => {
+    const world = setup(on, prFailing)
+    await start($, world)
+    const pane = await showPane($)
+    const first = pane.press({ key: 'rerun-failed' })
+    const second = await runPr($, 'rerun')
+    await first
+    await world.clock.settle()
+    expect(second.text).toContain('in progress')
+    const afterFirst = reruns(world).length
+    expect(afterFirst).toBeGreaterThan(0)
+    // the guard is released afterwards
+    await pane.press({ key: 'rerun-failed' })
+    await world.clock.settle()
+    expect(reruns(world).length).toBe(afterFirst * 2)
+    await pane.unmount()
   })
 })
 

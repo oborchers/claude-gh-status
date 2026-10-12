@@ -10,6 +10,7 @@
 
 import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
+import { activityAt } from './status'
 import type {
   Check,
   CheckState,
@@ -62,8 +63,8 @@ export const PR_DETAIL_QUERY = `query($id: ID!) {
       viewerCanMergeAsAdmin
       reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { slug organization { login } } ... on Bot { login } } } }
       latestReviews(first: 20) { nodes { author { login } state submittedAt } }
-      reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 1) { nodes { author { login } createdAt url } } } }
-      comments(last: 1) { totalCount nodes { author { login } createdAt url } }
+      reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } } } }
+      comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { nodes {
         ${CONTEXT_FIELDS}
       } } } } } }
@@ -234,22 +235,74 @@ function toCheck(node: Obj): Check | null {
   return null
 }
 
-/** The checks of a statusCheckRollup, malformed contexts dropped. */
+/** The checks of a statusCheckRollup, malformed contexts dropped, latest run per check kept. */
 function checksOf(rollup: unknown): Check[] {
   const checks: Check[] = []
   for (const context of nodesOf(asObj(rollup)?.contexts)) {
     const check = toCheck(context)
     if (check !== null) checks.push(check)
   }
-  return checks
+  return latestPerCheck(checks)
 }
+
+/**
+ * A workflow that runs twice on one commit (two pull request events) reports
+ * every check twice. GitHub judges mergeability by the latest check run per
+ * workflow and name, so only that one is kept, at the position of the first.
+ * Check run ids grow, so the larger job id is the later run. Pure, exported for tests.
+ */
+export function latestPerCheck(checks: Check[]): Check[] {
+  const latest = new Map<string, Check>()
+  const order: string[] = []
+  for (const check of checks) {
+    if (check.jobId === null) {
+      order.push(`status:${order.length}`)
+      latest.set(order[order.length - 1] as string, check)
+      continue
+    }
+    const key = `${check.workflow ?? ''}\u0000${check.name}`
+    const known = latest.get(key)
+    if (known === undefined) {
+      order.push(key)
+      latest.set(key, check)
+    } else if ((known.jobId ?? 0) < check.jobId) {
+      latest.set(key, check)
+    }
+  }
+  return order.map((key) => latest.get(key) as Check)
+}
+
+/**
+ * Bots often post a comment and rewrite it moments later (automatic
+ * post-processing, 1 to 2 s after creation). Such an edit is part of posting,
+ * not an update, so an edit closer to creation than this is treated as no edit.
+ * Normalizing here keeps status, toasts and the pane unchanged.
+ */
+export const EDIT_GRACE_MS = 60_000
 
 function toCommentRef(node: Obj | undefined): CommentRef | null {
   if (node === undefined) return null
   const createdAt = asStr(node.createdAt)
   const url = asStr(node.url)
   if (createdAt === null || url === null) return null
-  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, url }
+  const lastEditedAt = asStr(node.lastEditedAt)
+  const isEdited = lastEditedAt !== null && Date.parse(lastEditedAt) - Date.parse(createdAt) >= EDIT_GRACE_MS
+  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: isEdited ? lastEditedAt : null, url }
+}
+
+/**
+ * The most recently active of a connection's comments (max of createdAt and
+ * lastEditedAt), so a review bot that edits an older comment in place
+ * surfaces. Ties go to the later node.
+ */
+function latestActive(nodes: Obj[]): CommentRef | null {
+  let best: CommentRef | null = null
+  for (const node of nodes) {
+    const ref = toCommentRef(node)
+    if (ref === null) continue
+    if (best === null || Date.parse(activityAt(ref)) >= Date.parse(activityAt(best))) best = ref
+  }
+  return best
 }
 
 function toReviewRequest(node: Obj): ReviewRequest | null {
@@ -280,7 +333,7 @@ function toThread(node: Obj): ReviewThread {
     isOutdated: asBool(node.isOutdated),
     path: asStr(node.path),
     line: asNum(node.line),
-    last: toCommentRef(nodesOf(node.comments)[0]),
+    last: latestActive(nodesOf(node.comments)),
   }
 }
 
@@ -396,13 +449,18 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     reviewRequests,
     threads: nodesOf(node.reviewThreads).map(toThread),
     commentCount: asNum(comments?.totalCount) ?? 0,
-    lastComment: toCommentRef(nodesOf(comments)[0]),
+    lastComment: latestActive(nodesOf(comments)),
   }
   return { pr, rateLimit }
 }
 
 function failed(message: string): Extract<GhResult, { isOk: false }> {
   return { isOk: false, kind: 'failed', exitCode: null, message, stdout: '' }
+}
+
+/** An answer that is not JSON (an HTML error page, a cut-off body) is GitHub's fault, so it is retried. */
+function unreadable(): Extract<GhResult, { isOk: false }> {
+  return { isOk: false, kind: 'server', exitCode: null, message: 'GitHub sent an unreadable answer', stdout: '' }
 }
 
 /** Parses gh's stdout as JSON; null when it is not valid JSON. */
@@ -434,7 +492,7 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const listRan = await runGh(exec, ['api', 'graphql', '-f', `query=${PR_QUERY}`, '-f', `owner=${owner}`, '-f', `name=${repo}`, '-f', `branch=${branch}`], { login, cwd: location.cwd })
   if (!listRan.isOk) return { kind: 'error', failure: listRan }
   const list = parseJson(listRan.stdout)
-  if (list === null) return { kind: 'error', failure: failed('gh returned unreadable JSON') }
+  if (list === null) return { kind: 'error', failure: unreadable() }
   const listError = graphqlMessage(list)
   if (listError !== null) return { kind: 'error', failure: failed(listError) }
 
@@ -444,7 +502,7 @@ export async function fetchPullRequest(exec: Exec, location: RepoLocation, login
   const detailRan = await runGh(exec, ['api', 'graphql', '-f', `query=${PR_DETAIL_QUERY}`, '-f', `id=${chosen.id}`], { login, cwd: location.cwd })
   if (!detailRan.isOk) return { kind: 'error', failure: detailRan }
   const detail = parseJson(detailRan.stdout)
-  if (detail === null) return { kind: 'error', failure: failed('gh returned unreadable JSON') }
+  if (detail === null) return { kind: 'error', failure: unreadable() }
   const detailError = graphqlMessage(detail)
   if (detailError !== null) return { kind: 'error', failure: failed(detailError) }
   return { kind: 'ok', ...normalize({ list, detail }, location) }

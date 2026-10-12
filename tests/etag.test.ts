@@ -71,12 +71,13 @@ function tags(version: string): Record<string, string> {
 }
 
 describe('fastPaths', () => {
-  test('watches check runs, commit status, the pull request and its comments', () => {
+  test('watches check runs, commit status, the pull request, its comments and its review comments', () => {
     expect(paths).toEqual([
       'repos/cli/cli/commits/abc123/check-runs?per_page=100',
       'repos/cli/cli/commits/abc123/status',
       'repos/cli/cli/pulls/7',
       'repos/cli/cli/issues/7/comments?per_page=100',
+      'repos/cli/cli/pulls/7/comments?per_page=100',
     ])
   })
 })

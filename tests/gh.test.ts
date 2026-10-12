@@ -21,4 +21,42 @@ describe('runGh', () => {
   test('classifies a repository the account cannot see as not-found', () => {
     expect(classifyGhError("GraphQL: Could not resolve to a Repository with the name 'o/r'. (repository)")).toBe('not-found')
   })
+
+  test('classification table', () => {
+    const table: [string, string, string][] = [
+      ['gh: HTTP 504', '', 'server'],
+      ['HTTP 502: Bad Gateway (https://api.github.com/graphql)', '', 'server'],
+      ['gh: HTTP 503 Service Unavailable', '', 'server'],
+      ['gh: HTTP 500', '', 'server'],
+      ['gh: Server Error', '', 'server'],
+      ['Gateway Timeout', '', 'server'],
+      ["invalid character '<' looking for beginning of value", '', 'server'],
+      ['', '<!DOCTYPE html><html>Unicorn!</html>', 'server'],
+      ['gh: Not Found (HTTP 404)', '', 'not-found'],
+      ['gh: HTTP 404', '<html>Not Found</html>', 'not-found'],
+      ['gh: Bad credentials (HTTP 401)', '', 'auth'],
+      ['gh: HTTP 403: API rate limit exceeded', '', 'rate-limited'],
+      ['HTTP 429: secondary rate limit', '', 'rate-limited'],
+      ['error connecting to api.github.com: could not resolve host', '', 'network'],
+      ['operation timeout', '', 'network'],
+      ['GraphQL: boom', '', 'failed'],
+    ]
+    for (const [stderr, stdout, kind] of table) expect(classifyGhError(stderr, stdout)).toBe(kind)
+  })
+
+  test('runGh reports a 504 as server and keeps the first stderr line', async () => {
+    const exec: Exec = async () => ({ exitCode: 1, stdout: '', stderr: 'gh: HTTP 504\n', isStdoutTruncated: false, isStderrTruncated: false })
+    expect(await runGh(exec, ['api', 'user'], { login: null })).toMatchObject({ isOk: false, kind: 'server', message: 'gh: HTTP 504' })
+  })
+})
+
+describe('classifyGhError for GraphQL internal errors', () => {
+  test('a GraphQL internal error during an outage is a temporary server problem', () => {
+    const stderr = "gh: Something went wrong while executing your query on 2026-10-12T12:56:00Z. Please include `3072:2D6B0:9F118E:EA5BA5:6ACCD8D6` when reporting this issue."
+    expect(classifyGhError(stderr)).toBe('server')
+  })
+
+  test('a GraphQL timeout is a temporary server problem', () => {
+    expect(classifyGhError("gh: We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request")).toBe('server')
+  })
 })

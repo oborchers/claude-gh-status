@@ -2,8 +2,9 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
-import type { RepoLocation } from '../src/model'
-import { PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, normalize, selectCandidate, statusContextState } from '../src/query'
+import type { CommentRef, PullRequest, RepoLocation } from '../src/model'
+import { activityAt, commentWhen, transitions } from '../src/status'
+import { EDIT_GRACE_MS, PR_DETAIL_QUERY, PR_QUERY, candidatesOf, checkStateFrom, fetchPullRequest, latestPerCheck, normalize, selectCandidate, statusContextState } from '../src/query'
 import {
   prAdmin,
   prAutoMerge,
@@ -22,6 +23,7 @@ import {
   prStatusContexts,
   prFailing,
 } from './fixtures/pr-raw'
+import { makeCheck, makeSnapshot } from './fixtures/pr-builder'
 
 const cliLocation: RepoLocation = { cwd: '/work/cli', branch: 'feature', owner: 'cli', repo: 'cli', pinnedLogin: null }
 
@@ -162,6 +164,108 @@ describe('normalize', () => {
       { reviewer: 'cli/platform', isTeam: true },
       { reviewer: 'copilot-pull-request-reviewer', isTeam: false },
     ])
+  })
+
+  describe('comment edits', () => {
+    const comment = (login: string, createdAt: string, lastEditedAt: string | null, id: number) => ({
+      author: { login },
+      createdAt,
+      lastEditedAt,
+      url: `https://github.com/cli/cli/pull/14580#issuecomment-${id}`,
+    })
+
+    type Raw = { detail: { data: { node: { comments: { nodes: unknown[] }; reviewThreads: { nodes: unknown[] } } } } }
+    function withComments(comments: unknown[], threadComments: unknown[] = []) {
+      const raw = structuredClone(prGreen) as unknown as Raw
+      raw.detail.data.node.comments.nodes = comments
+      raw.detail.data.node.reviewThreads.nodes = [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 3, comments: { nodes: threadComments } }]
+      return raw
+    }
+
+    test('the queries ask for lastEditedAt on the last 100 comments and the last 5 per thread', () => {
+      expect(PR_DETAIL_QUERY).toContain('comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }')
+      expect(PR_DETAIL_QUERY).toContain('comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } }')
+    })
+
+    test('an unedited comment has editedAt null (also when the field is absent)', () => {
+      const pr = normalize(prGreen, cliLocation).pr
+      expect(pr?.lastComment?.editedAt).toBeNull()
+      const raw = withComments([comment('anna', '2026-10-01T00:00:00Z', null, 1)])
+      expect(normalize(raw, cliLocation).pr?.lastComment?.editedAt).toBeNull()
+    })
+
+    test('an edited older comment beats a newer unedited one', () => {
+      const raw = withComments([
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 1),
+        comment('anna', '2026-10-03T00:00:00Z', null, 2),
+      ])
+      const last = normalize(raw, cliLocation).pr?.lastComment
+      expect(last?.author).toBe('review-bot')
+      expect(last?.editedAt).toBe('2026-10-05T00:00:00Z')
+    })
+
+    test('a newer comment beats an older edit; ties go to the later comment', () => {
+      const newer = withComments([
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 1),
+        comment('anna', '2026-10-06T00:00:00Z', null, 2),
+      ])
+      expect(normalize(newer, cliLocation).pr?.lastComment?.author).toBe('anna')
+      const tie = withComments([comment('a', '2026-10-01T00:00:00Z', null, 1), comment('b', '2026-10-01T00:00:00Z', null, 2)])
+      expect(normalize(tie, cliLocation).pr?.lastComment?.author).toBe('b')
+    })
+
+    test('an old comment edited a day later wins among seven comments', () => {
+      const comments = [
+        comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-02T07:00:00Z', 1),
+        comment('tracker-bot', '2026-10-01T08:01:00Z', '2026-10-02T07:01:00Z', 2),
+        comment('anna', '2026-10-01T09:00:00Z', null, 3),
+        comment('ben', '2026-10-01T10:00:00Z', null, 4),
+        comment('anna', '2026-10-01T11:00:00Z', null, 5),
+        comment('ben', '2026-10-01T12:00:00Z', null, 6),
+        comment('anna', '2026-10-01T13:00:00Z', null, 7),
+      ]
+      const last = normalize(withComments(comments), cliLocation).pr?.lastComment
+      expect(last?.author).toBe('tracker-bot')
+      expect(last?.editedAt).toBe('2026-10-02T07:01:00Z')
+    })
+
+    test('an edit within the grace period is no edit; one exactly at the threshold counts', () => {
+      expect(EDIT_GRACE_MS).toBe(60_000)
+      const quick = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:00:02Z', 1)])
+      const quickRef = normalize(quick, cliLocation).pr?.lastComment
+      expect(quickRef?.editedAt).toBeNull()
+      expect(activityAt(quickRef as CommentRef)).toBe('2026-10-01T08:00:00Z')
+      expect(commentWhen(quickRef as CommentRef, Date.parse('2026-10-01T09:00:00Z'))).not.toContain('edited')
+      const justUnder = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:00:59Z', 1)])
+      expect(normalize(justUnder, cliLocation).pr?.lastComment?.editedAt).toBeNull()
+      const exact = withComments([comment('ci-bot', '2026-10-01T08:00:00Z', '2026-10-01T08:01:00Z', 1)])
+      expect(normalize(exact, cliLocation).pr?.lastComment?.editedAt).toBe('2026-10-01T08:01:00Z')
+    })
+
+    test('a quick bot edit raises no comment updated toast', () => {
+      const prOf = (edited: string | null) => normalize(withComments([comment('ci-bot', '2026-10-01T08:00:00Z', edited, 1)]), cliLocation).pr as PullRequest
+      const before = makeSnapshot(prOf(null))
+      const quick = makeSnapshot(prOf('2026-10-01T08:00:02Z'))
+      expect(transitions(before, quick, 'me').filter((t) => t.includes('comment updated'))).toEqual([])
+      const late = makeSnapshot(prOf('2026-10-01T09:00:00Z'))
+      expect(transitions(before, late, 'me').filter((t) => t.includes('comment updated'))).toHaveLength(1)
+    })
+
+    test('a thread surfaces its most recently active comment', () => {
+      const raw = withComments([], [
+        comment('review-bot', '2026-10-01T00:00:00Z', '2026-10-05T00:00:00Z', 7),
+        comment('anna', '2026-10-03T00:00:00Z', null, 8),
+      ])
+      const thread = normalize(raw, cliLocation).pr?.threads[0]
+      expect(thread?.last?.author).toBe('review-bot')
+      expect(thread?.last?.editedAt).toBe('2026-10-05T00:00:00Z')
+    })
+
+    test('malformed comments are skipped; none gives null', () => {
+      const raw = withComments([{ author: null, createdAt: 5 }, comment('anna', '2026-10-01T00:00:00Z', null, 2)])
+      expect(normalize(raw, cliLocation).pr?.lastComment?.author).toBe('anna')
+      expect(normalize(withComments([]), cliLocation).pr?.lastComment).toBeNull()
+    })
   })
 
   test('running and queued checks, unknown merge facts, a ghost comment author', () => {
@@ -438,7 +542,9 @@ describe('fetchPullRequest', () => {
   test('unreadable JSON and GraphQL errors without data are failures', async () => {
     forgetTokens()
     const garbage = await fetchPullRequest(fakeExec([{ stdout: '<html>' }]).exec, cliLocation, 'oborchers')
-    expect(garbage.kind).toBe('error')
+    expect(garbage.kind === 'error' && garbage.failure.kind).toBe('server')
+    const cutOff = await fetchPullRequest(fakeExec([{ stdout: '{"data":' }]).exec, cliLocation, 'oborchers')
+    expect(cutOff.kind === 'error' && cutOff.failure.kind).toBe('server')
     const errors = await fetchPullRequest(fakeExec([{ stdout: JSON.stringify({ data: null, errors: [{ message: 'boom' }] }) }]).exec, cliLocation, 'oborchers')
     expect(errors.kind === 'error' && errors.failure.message).toBe('boom')
   })
@@ -448,5 +554,29 @@ describe('fetchPullRequest', () => {
     const result = await fetchPullRequest(exec, { ...cliLocation, branch: null }, 'oborchers')
     expect(result.kind).toBe('error')
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('latestPerCheck', () => {
+  test('a workflow that ran twice on the commit keeps only the later run of each check', () => {
+    const checks = [
+      makeCheck({ name: 'prepare', workflow: 'Review', jobId: 10, state: 'success' }),
+      makeCheck({ name: 'review', workflow: 'Review', jobId: 11, state: 'skipped' }),
+      makeCheck({ name: 'lint', workflow: 'CI', jobId: 12, state: 'success' }),
+      makeCheck({ name: 'prepare', workflow: 'Review', jobId: 20, state: 'success' }),
+      makeCheck({ name: 'review', workflow: 'Review', jobId: 21, state: 'success' }),
+    ]
+    const kept = latestPerCheck(checks)
+    expect(kept.map((check) => `${check.name}:${check.jobId}`)).toEqual(['prepare:20', 'review:21', 'lint:12'])
+  })
+
+  test('the same name in different workflows stays twice; commit statuses are never merged', () => {
+    const checks = [
+      makeCheck({ name: 'build', workflow: 'A', jobId: 1 }),
+      makeCheck({ name: 'build', workflow: 'B', jobId: 2 }),
+      makeCheck({ name: 'ci/legacy', workflow: null, jobId: null }),
+      makeCheck({ name: 'ci/legacy', workflow: null, jobId: null }),
+    ]
+    expect(latestPerCheck(checks)).toHaveLength(4)
   })
 })

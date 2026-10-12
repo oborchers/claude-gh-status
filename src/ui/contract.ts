@@ -41,6 +41,8 @@ export type Handlers = {
   openUrl(url: string): void
   /** Puts a reference to a failed job into the prompt (wave 3). */
   ciToClaude?(): void
+  /** Re-runs the failed jobs of the failed Actions runs; offered only while some run can be re-run. */
+  rerunFailed?(): void
   /** Ask for a write action: sets it pending (the band and pane then show the confirmation); none of them writes by itself. */
   requestMerge?(): void
   requestEnqueue?(): void

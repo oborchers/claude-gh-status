@@ -86,6 +86,8 @@ export type ReviewRequest = {
 export type CommentRef = {
   author: string;
   createdAt: string;
+  /** lastEditedAt; null when the comment was never edited. */
+  editedAt: string | null;
   url: string;
 };
 
@@ -163,6 +165,22 @@ export type PullRequest = {
   lastComment: CommentRef | null;
 };
 
+/**
+ * A transient failure that is being retried (GitHub 5xx, an unreadable answer,
+ * network, timeout, rate limit). Carried by the snapshot it concerns, so it is
+ * gone with the next good answer.
+ */
+export type Problem = {
+  /** Short label for the hint: `504`, `bad response`, `network`, `timeout`, `rate limit`. */
+  reason: string;
+  /** ISO time of the first failed attempt of this streak. */
+  since: string;
+  /** ISO time of the latest failed attempt. */
+  triedAt: string;
+  /** Wait from `triedAt` to the next attempt: 15 s, 30 s, then 60 s. */
+  retryInMs: number;
+};
+
 /** Everything the band and pane draw from. Exactly one `kind` at a time. */
 export type Snapshot =
   | { kind: 'loading'; at: string }
@@ -171,8 +189,16 @@ export type Snapshot =
   | { kind: 'detached'; at: string; location: RepoLocation }
   | { kind: 'no-account'; at: string; location: RepoLocation; failure: AccountFailure }
   | { kind: 'no-pr'; at: string; location: RepoLocation; account: AccountChoice }
-  | { kind: 'pr'; at: string; location: RepoLocation; account: AccountChoice; pr: PullRequest }
-  | { kind: 'error'; at: string; message: string; location: RepoLocation | null };
+  | {
+      kind: 'pr';
+      at: string;
+      location: RepoLocation;
+      account: AccountChoice;
+      pr: PullRequest;
+      /** Set while the last attempt to refresh failed transiently: `pr` is then the last good data, `at` its age. */
+      stale?: Problem | null;
+    }
+  | { kind: 'error'; at: string; message: string; location: RepoLocation | null; problem?: Problem };
 
 export type BlockerKind =
   | 'draft'

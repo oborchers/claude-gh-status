@@ -1,12 +1,18 @@
 {
   "name": "gh-status",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Oliver Borchers"
   },
   "userConfig": {
+    "command": {
+      "type": "string",
+      "title": "Command name",
+      "description": "Slash command name; if it is taken in a session (for example by a skill), /gh-pr is used instead",
+      "default": "pr"
+    },
     "accounts": {
       "type": "string",
       "title": "Account per owner",

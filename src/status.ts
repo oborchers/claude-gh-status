@@ -168,6 +168,16 @@ export function mergeTone(status: Pick<Status, 'pipeline' | 'caveats'>): 'succes
   return status.pipeline.failed > 0 ? 'failure' : 'pending'
 }
 
+/** When a comment last had activity: its edit time, else its creation time. */
+export function activityAt(ref: CommentRef): string {
+  return ref.editedAt ?? ref.createdAt
+}
+
+/** The tail of a comment line: '@ben 4 min ago', or '@ben edited 2 min ago' once edited. */
+export function commentWhen(ref: CommentRef, nowMs: number): string {
+  return ref.editedAt === null ? `@${ref.author} ${relativeTime(ref.createdAt, nowMs)}` : `@${ref.author} edited ${relativeTime(ref.editedAt, nowMs)}`
+}
+
 function commentRefs(pr: PullRequest): CommentRef[] {
   const refs: CommentRef[] = []
   const seen = new Set<string>()
@@ -193,8 +203,8 @@ export function deriveStatus(pr: PullRequest, viewerLogin: string, lastSeenAt: s
   const pipeline = summarizePipeline(pr.checks)
   const seenMs = lastSeenAt === null ? Number.POSITIVE_INFINITY : Date.parse(lastSeenAt)
   const newActivity = commentRefs(pr)
-    .filter((ref) => ref.author !== viewerLogin && Date.parse(ref.createdAt) > seenMs)
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .filter((ref) => ref.author !== viewerLogin && Date.parse(activityAt(ref)) > seenMs)
+    .sort((a, b) => Date.parse(activityAt(a)) - Date.parse(activityAt(b)))
   const base = {
     verdict: deriveVerdict(pr, blockers, pipeline),
     blockers,
@@ -261,10 +271,18 @@ export function transitions(prev: Snapshot | null, next: Snapshot, viewerLogin: 
   const newChanges = nextStatus.changesRequestedBy.filter((login) => !prevStatus.changesRequestedBy.includes(login))
   if (newChanges.length > 0) push(4, `changes requested by ${names(newChanges)}`)
 
-  const knownUrls = new Set(commentRefs(before).map((ref) => ref.url))
-  const fresh = commentRefs(after).filter((ref) => ref.author !== viewerLogin && !knownUrls.has(ref.url))
+  const known = new Map(commentRefs(before).map((ref) => [ref.url, ref]))
+  const others = commentRefs(after).filter((ref) => ref.author !== viewerLogin)
+  const fresh = others.filter((ref) => !known.has(ref.url))
   if (fresh.length === 1 && fresh[0] !== undefined) push(5, `new comment by @${fresh[0].author}`)
   else if (fresh.length > 1) push(5, `${fresh.length} new comments`)
+  // A known comment (matched by url) whose edit time moved: a bot rewriting its comment in place.
+  const updated = others.filter((ref) => {
+    const old = known.get(ref.url)
+    return old !== undefined && ref.editedAt !== null && ref.editedAt !== old.editedAt
+  })
+  if (updated.length === 1 && updated[0] !== undefined) push(5.5, `comment updated by @${updated[0].author}`)
+  else if (updated.length > 1) push(5.5, `${updated.length} comments updated`)
 
   if (!before.isInMergeQueue && after.isInMergeQueue) {
     const position = after.mergeQueueEntry?.position

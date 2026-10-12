@@ -15,6 +15,7 @@ export type GhErrorKind =
   | 'not-found'
   | 'auth'
   | 'rate-limited'
+  | 'server'
   | 'network'
   | 'timeout'
   | 'failed'
@@ -39,8 +40,14 @@ const TOKEN_TIMEOUT_MS = 5_000
 /** Tokens per login for this module instance; never written to $.state or $.store. */
 const tokens = new Map<string, string>()
 
-/** Classifies a failed gh run by its stderr. Pure, exported for tests. */
-export function classifyGhError(stderr: string): GhErrorKind {
+const SERVER_ERROR = /\bhttp (500|502|503|504)\b|bad gateway|service unavailable|gateway time-?out|server error|invalid character '<'|something went wrong while executing your query|couldn't respond to your request in time/
+
+/**
+ * Classifies a failed gh run by its stderr, and by its stdout when that is an
+ * HTML error page. Pure, exported for tests. A 5xx or an HTML body is 'server':
+ * GitHub, not the request, is at fault, so it is worth retrying.
+ */
+export function classifyGhError(stderr: string, stdout = ''): GhErrorKind {
   const text = stderr.toLowerCase()
   if (text.includes('could not resolve to a repository') || text.includes('http 404') || text.includes('not found')) {
     return 'not-found'
@@ -51,6 +58,7 @@ export function classifyGhError(stderr: string): GhErrorKind {
   if (text.includes('http 401') || text.includes('bad credentials') || text.includes('authentication') || text.includes('gh auth login')) {
     return 'auth'
   }
+  if (SERVER_ERROR.test(text) || stdout.trimStart().startsWith('<')) return 'server'
   if (text.includes('could not resolve host') || text.includes('connection refused') || text.includes('network') || text.includes('timeout')) {
     return 'network'
   }
@@ -95,7 +103,7 @@ export async function runGh(exec: Exec, args: readonly string[], options: GhOpti
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     })
     if (ran.exitCode === 0) return { isOk: true, stdout: ran.stdout, stderr: ran.stderr }
-    const kind = classifyGhError(ran.stderr)
+    const kind = classifyGhError(ran.stderr, ran.stdout)
     if (kind === 'auth') forgetTokens()
     return { isOk: false, kind, exitCode: ran.exitCode, message: firstLine(ran.stderr), stdout: ran.stdout }
   } catch (error) {

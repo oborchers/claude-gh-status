@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
+  activityAt,
   checkGlyph,
+  commentWhen,
   deriveBlockers,
   deriveStatus,
   deriveVerdict,
@@ -26,7 +28,7 @@ const verdictOf = (pr: PullRequest): Verdict => {
   const blockers = deriveBlockers(pr)
   return deriveVerdict(pr, blockers, summarizePipeline(pr.checks))
 }
-const ref = (author: string, createdAt: string, url: string) => ({ author, createdAt, url })
+const ref = (author: string, createdAt: string, url: string, editedAt: string | null = null) => ({ author, createdAt, editedAt, url })
 
 describe('summarizePipeline', () => {
   test('counts every state and ignores stale', () => {
@@ -270,6 +272,20 @@ describe('deriveStatus', () => {
     expect(deriveStatus(pr, 'anna', lastSeen).newActivity.map((r) => r.url)).toEqual(['u2', 'u3'])
   })
 
+  test('an edit after lastSeenAt counts as new activity, sorted by activity time', () => {
+    const edited = makePr({
+      lastComment: ref('bot', '2026-01-01T08:00:00Z', 'b1', '2026-01-01T14:30:00Z'),
+      threads: [{ isResolved: false, isOutdated: false, path: 'a.ts', line: 1, last: ref('bob', '2026-01-01T14:00:00Z', 'u2') }],
+    })
+    expect(deriveStatus(edited, 'me', lastSeen).newActivity.map((r) => r.url)).toEqual(['u2', 'b1'])
+    expect(deriveStatus(edited, 'bot', lastSeen).newActivity.map((r) => r.url)).toEqual(['u2'])
+  })
+
+  test('an edit before lastSeenAt stays old even if the comment is older still', () => {
+    const edited = makePr({ lastComment: ref('bot', '2026-01-01T08:00:00Z', 'b1', '2026-01-01T11:00:00Z') })
+    expect(deriveStatus(edited, 'me', lastSeen).newActivity).toEqual([])
+  })
+
   test('reviews, requests and threads', () => {
     const status = deriveStatus(pr, 'me', lastSeen)
     expect(status.approvals).toEqual(['anna'])
@@ -400,6 +416,38 @@ describe('transitions', () => {
     ])
   })
 
+  test('an edited known comment toasts as updated, not as new, matched by url', () => {
+    const prev = snap({ lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1') })
+    const edited = snap({ lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1', '2026-01-01T10:00:00Z') })
+    expect(transitions(prev, edited, 'me')).toEqual(['PR #42: comment updated by @bot'])
+    const again = snap({ lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1', '2026-01-01T11:00:00Z') })
+    expect(transitions(edited, again, 'me')).toEqual(['PR #42: comment updated by @bot'])
+    expect(transitions(edited, edited, 'me')).toEqual([])
+  })
+
+  test('the viewer\'s own edits do not toast; several edits are counted', () => {
+    const prev = snap({
+      lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1'),
+      threads: [{ isResolved: false, isOutdated: false, path: null, line: null, last: ref('bot2', '2026-01-01T09:00:00Z', 'b2') }],
+    })
+    const edited = snap({
+      lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1', '2026-01-01T10:00:00Z'),
+      threads: [{ isResolved: false, isOutdated: false, path: null, line: null, last: ref('bot2', '2026-01-01T09:00:00Z', 'b2', '2026-01-01T10:00:00Z') }],
+    })
+    expect(transitions(prev, edited, 'bot')).toEqual(['PR #42: comment updated by @bot2'])
+    expect(transitions(prev, edited, 'me')).toEqual(['PR #42: 2 comments updated'])
+    expect(transitions(prev, edited, 'bot2')).toEqual(['PR #42: comment updated by @bot'])
+  })
+
+  test('a new comment and an edit together give both toasts', () => {
+    const prev = snap({ lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1') })
+    const next = snap({
+      lastComment: ref('bot', '2026-01-01T09:00:00Z', 'b1', '2026-01-01T10:00:00Z'),
+      threads: [{ isResolved: false, isOutdated: false, path: null, line: null, last: ref('carl', '2026-01-01T10:30:00Z', 'u3') }],
+    })
+    expect(transitions(prev, next, 'me')).toEqual(['PR #42: new comment by @carl', 'PR #42: comment updated by @bot'])
+  })
+
   test('approval ranks above comments and queue', () => {
     const prev = snap({})
     const next = snap({
@@ -444,6 +492,16 @@ describe('formatting helpers', () => {
     ['garbage', 'just now'],
   ]
   for (const [iso, text] of relative) test(`relativeTime(${iso})`, () => expect(relativeTime(iso, now)).toBe(text))
+
+  test('commentWhen says edited only for edited comments and measures from the edit', () => {
+    expect(commentWhen(ref('bot', '2026-01-10T11:56:00Z', 'u'), now)).toBe('@bot 4 min ago')
+    expect(commentWhen(ref('bot', '2026-01-08T12:00:00Z', 'u', '2026-01-10T11:58:00Z'), now)).toBe('@bot edited 2 min ago')
+  })
+
+  test('activityAt is the edit time, else the creation time', () => {
+    expect(activityAt(ref('a', '2026-01-01T00:00:00Z', 'u'))).toBe('2026-01-01T00:00:00Z')
+    expect(activityAt(ref('a', '2026-01-01T00:00:00Z', 'u', '2026-01-02T00:00:00Z'))).toBe('2026-01-02T00:00:00Z')
+  })
 
   test('shortSha', () => {
     expect(shortSha('abcdef0123456789')).toBe('abcdef0')

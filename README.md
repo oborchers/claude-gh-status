@@ -7,7 +7,7 @@ The pull request status of your current branch, live inside Claude Code, so you 
 ## What you see
 
 - **A band above the prompt.** One line with the PR number, state badge, verdict, pipeline, reviews, unresolved threads and the account in use.
-- **A detail pane with `/pr`.** Merge section, reviews, conversation, and the full pipeline.
+- **A detail pane with `/pr`.** Merge section, reviews, conversation, and the full pipeline. Comment times read `@bot 4 min ago`, or `@bot edited 2 min ago` once a comment was edited in place (review bots do that).
 - **A live pipeline.** Every job with its running step, updated while checks run.
 - **An honest verdict.** `ready to merge · 1 check failed` is red, it is yellow while checks run, and it is green only when everything is clean.
 - **Reviews and unresolved threads.** Who approved, who asked for changes, and what is still open.
@@ -18,7 +18,7 @@ The pull request status of your current branch, live inside Claude Code, so you 
 
 <img src="docs/images/compact-view.png" alt="The detail pane opened inline above the prompt in a narrow terminal" width="70%">
 
-In a narrow terminal (about 100 columns in our tests) the pane opens inline above the prompt instead of docking beside the transcript.
+Below 110 columns, or outside the fullscreen layout, the pane opens inline above the prompt instead of docking beside the transcript.
 
 ## Merge without leaving the terminal
 
@@ -70,6 +70,8 @@ Requirements:
 
 ## Commands and keys
 
+The command is `/pr`. If a skill or another command already uses that name in a session, the mod does not register it there and a toast says so; `/gh-pr` always works and does the same. The name can be changed with the setting `command` (Command name). Below, `/pr` stands for the active name.
+
 | Command | Does |
 | --- | --- |
 | `/pr` | Open the detail pane |
@@ -83,15 +85,18 @@ Requirements:
 | `/pr auto` (`/pr a`) | Ask to turn auto-merge on, or off if it is on |
 | `/pr admin` (`/pr x`) | Ask for an admin merge (two steps) |
 | `/pr fix` | Put the failed CI jobs into the prompt |
+| `/pr rerun` (`/pr rr`) | Re-run only the failed jobs of the failed workflow runs (no confirmation: it only starts CI again) |
 
 Write commands only ask: they open the detail pane with the keyboard and show the confirmation in its Merge section and in the band. The keyboard is granted when the prompt is empty. They tell you when an action is not available for the current PR.
+
+Re-running covers the head commit's failed, timed-out and cancelled Actions runs, once each, with `gh run rerun <id> --failed`. A run that still has a queued or running job is skipped (GitHub refuses it), runs waiting for approval are skipped, and the merge queue's own checks are never touched. It writes nothing but a new CI attempt: no merge, no code.
 
 Keys (a key only appears when its action is available):
 
 | Where | Keys |
 | --- | --- |
-| Band | `d` details, `o` open on GitHub, `f` fix CI (when a check failed), `m` merge, `q` add to queue |
-| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed) |
+| Band | `d` details, `o` open on GitHub, `f` fix CI (when a check failed), `m` merge, `q` add to queue, `t` retry failed jobs (when a failed run can be re-run) |
+| Pane | `m` merge, `q` add to or remove from queue, `a` auto-merge on or off, `x` admin merge, `o` open on GitHub, `c` copy URL, `r` refresh, `f` fix CI (when a check failed), `t` retry failed jobs (when a failed run can be re-run) |
 | Confirmation (band or pane) | `y` confirm (`b` for the final admin step), `n` cancel |
 
 Keys work while the band or pane has the keyboard: focus the band or pane with ctrl+x tab or a click. If your terminal multiplexer takes ctrl+x tab, click the band to focus it. Esc returns to the prompt. There is no separate dialog: a button press or a slash command sets the confirmation, and both the band (a one-line prompt with `y` and `n`) and the pane's Merge section (full details) show it, so whichever one holds the keyboard can answer. Cancel with `n` (or `/pr close`, or the pane's close mark); Esc alone only returns the keyboard. With several allowed merge methods the pane's confirmation shows a method selector (squash is the default if allowed).
@@ -120,6 +125,7 @@ Shown as rows in `/config`.
 | Fast interval (`fastIntervalSeconds`) | 5 | Check interval while checks run or the PR is in the merge queue. |
 | Idle interval (`idleIntervalSeconds`) | 30 | Check interval when nothing runs. |
 | Toasts on state changes (`toasts`) | on | Show a toast when the pipeline, reviews, comments or mergeability change. |
+| Command name (`command`) | `pr` | Slash command name (1 to 32 characters of a-z, 0-9 and `-`; anything else means `pr`). When it is taken in a session, for example by a skill, `/gh-pr` is used instead. |
 | Color scheme (`colors`) | `claude` | `claude` follows your Claude Code theme; `github` uses GitHub's Primer colors. |
 
 ## Live updates and rate limits

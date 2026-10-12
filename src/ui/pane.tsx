@@ -2,10 +2,10 @@
 
 import type { RenderElement } from 'claude-code'
 
-import { availableActions } from '../actions'
+import { availableActions, rerunnableRunIds } from '../actions'
 import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
-import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
-import { cellWidth, count, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart } from './format'
+import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
+import { cellWidth, count, headingLine, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
@@ -47,6 +47,9 @@ function checkRank(check: Check): number {
       return 1
     case 'queued':
       return 2
+    case 'skipped':
+    case 'neutral':
+      return 4
     default:
       return 3
   }
@@ -216,6 +219,8 @@ function mergeSection(table: UiTable, view: View, handlers: Handlers, snapshot: 
   add('copy', 'c', 'copy url', () => handlers.copyUrl())
   add('refresh', 'r', 'refresh', () => handlers.refresh())
   if (ciToClaude !== undefined && status.pipeline.failed > 0) add('fix-ci', 'f', 'fix ci', () => ciToClaude())
+  const rerunFailed = handlers.rerunFailed
+  if (rerunFailed !== undefined && rerunnableRunIds(pr).length > 0) add('rerun-failed', 't', 'retry failed', () => rerunFailed())
   rows.push(
     <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
       {buttons}
@@ -318,7 +323,7 @@ function reviewsSection(table: UiTable, view: View, status: Status): RenderEleme
 function threadRow(table: UiTable, view: View, handlers: Handlers, thread: ReviewThread, index: number): RenderElement {
   const { Button, Text } = table
   const where = thread.path === null ? 'thread' : thread.line === null ? thread.path : `${thread.path}:${thread.line}`
-  const who = thread.last === null ? '' : ` @${thread.last.author} ${relativeTime(thread.last.createdAt, view.nowMs)}`
+  const who = thread.last === null ? '' : ` ${commentWhen(thread.last, view.nowMs)}`
   const text = `${truncateStart(where, Math.max(8, view.columns - cellWidth(who) - 2))}`
   const url = thread.last?.url
   if (url === undefined) {
@@ -362,13 +367,26 @@ function conversationSection(table: UiTable, view: View, handlers: Handlers, pr:
     rows.push(
       <Button key="last-comment" plain onPress={() => handlers.openUrl(url)}>
         <Text>Last comment </Text>
-        <Text dimColor>{truncate(`@${last.author} ${relativeTime(last.createdAt, view.nowMs)}`, Math.max(8, view.columns - 14))}</Text>
+        <Text dimColor>{truncate(commentWhen(last, view.nowMs), Math.max(8, view.columns - 14))}</Text>
       </Button>,
     )
   } else {
     rows.push(<Text dimColor>no comments yet</Text>)
   }
   return rows
+}
+
+/** The one line under the header while the data is stale: its age, what is wrong, when the next try comes. */
+function staleRows(table: UiTable, view: View, snapshot: Pr): RenderElement[] {
+  const { Text } = table
+  const { stale } = snapshot
+  if (!stale) return []
+  const text = `showing last data from ${relativeTime(snapshot.at, view.nowMs)}, ${unavailableText(stale)}, ${retryText(stale, view.nowMs)}`
+  return [
+    <Text color={view.palette.pending} wrap="truncate-end">
+      {truncate(text, view.columns)}
+    </Text>,
+  ]
 }
 
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
@@ -397,6 +415,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
     <Text dimColor wrap="truncate-end">
       {truncate(`${shortSha(pr.headOid)} · refreshed ${relativeTime(snapshot.at, view.nowMs)}`, columns)}
     </Text>,
+    ...staleRows(table, view, snapshot),
   ]
 }
 
@@ -406,7 +425,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
   const { snapshot, status } = view
 
   if (snapshot.kind !== 'pr' || status === null) {
-    const line = snapshotLine(snapshot, 'pane')
+    const line = snapshotLine(snapshot, 'pane', view.nowMs)
     const text = line?.text ?? 'No pull request status yet.'
     return (
       <Box flexDirection="column">
@@ -465,6 +484,7 @@ function buttonRowCount(view: View, pr: PullRequest, status: Status): number {
   if (actions.includes('auto-merge-off')) labels.push('a auto-merge off')
   if (actions.includes('admin-merge')) labels.push('x admin merge')
   if (status.pipeline.failed > 0) labels.push('f fix ci')
+  if (rerunnableRunIds(pr).length > 0) labels.push('t retry failed')
   let rows = 1
   let used = 0
   for (const label of labels) {
@@ -510,13 +530,13 @@ function conversationRowCount(pr: PullRequest, status: Status): number {
 export function paneRowCount(view: View): number {
   const { snapshot, status } = view
   if (snapshot.kind !== 'pr' || status === null) {
-    const text = snapshotLine(snapshot, 'pane')?.text ?? 'No pull request status yet.'
+    const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
     const wrapped = Math.max(1, Math.ceil(cellWidth(text) / Math.max(1, view.columns)))
     return Math.max(MIN_PANE_ROWS, wrapped + 1)
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS,
+    HEADER_ROWS + (snapshot.stale ? 1 : 0),
     mergeRowCount(view, pr, status),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),
