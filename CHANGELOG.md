@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- GitHub's GraphQL errors "Something went wrong while executing your query" and "We couldn't respond to your request in time" count as temporary problems: the last data stays on screen and the mod retries after 15, 30, 60 s.
+- README: the pane docks from 110 columns in the fullscreen layout.
+
 ## [0.1.1] - 2026-10-12
 
 ### Fixed

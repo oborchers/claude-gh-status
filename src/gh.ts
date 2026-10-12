@@ -40,7 +40,7 @@ const TOKEN_TIMEOUT_MS = 5_000
 /** Tokens per login for this module instance; never written to $.state or $.store. */
 const tokens = new Map<string, string>()
 
-const SERVER_ERROR = /\bhttp (500|502|503|504)\b|bad gateway|service unavailable|gateway time-?out|server error|invalid character '<'/
+const SERVER_ERROR = /\bhttp (500|502|503|504)\b|bad gateway|service unavailable|gateway time-?out|server error|invalid character '<'|something went wrong while executing your query|couldn't respond to your request in time/
 
 /**
  * Classifies a failed gh run by its stderr, and by its stdout when that is an
