@@ -5,7 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.4] - 2026-10-12
+
+### Changed
+
+- The marketplace is named `claude-gh-status` (was `oborchers`), so it no longer collides with other marketplaces of the same owner. The plugin id is now `gh-status@claude-gh-status`. To move an existing install: `claude plugin uninstall gh-status@oborchers`, `claude plugin marketplace remove oborchers`, then install again with the line from the README.
 
 ### Fixed
 
@@ -52,6 +56,7 @@ First release.
 - Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
 - Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments by creation or edit time is shown, so a review bot that updates an older comment in place surfaces. Edits within 60 seconds of creation (automatic post-processing by bots) do not count. The fast check watches `pulls/{n}/comments` too; edits are seen within the first 100 comments of a list.
 
+[0.1.4]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.4
 [0.1.3]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.3
 [0.1.2]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.2
 [0.1.1]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.1
