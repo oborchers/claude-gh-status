@@ -374,13 +374,11 @@ declare module 'claude-code' {
       /** Hide drafts in the list. */
       listHideDrafts: boolean;
       /** A pull request picked from the list; the detail pane shows it instead of the branch's. */
-      selected: { number: number } | null;
+      selected: { number: number; repo: string } | null;
       /** Snapshot of the selected pull request; the band keeps showing `snapshot`. */
       selectedSnapshot: Snapshot | null;
       /** Yours and review-requested counts for the band. */
       counts: ListCounts | null;
-      /** Text typed for an approve or request-changes review. */
-      reviewBody: string;
     };
   }
 }

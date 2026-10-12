@@ -27,6 +27,34 @@ export const isReview = (pending: PendingAction): pending is ReviewPending => pe
 /** The text that will be posted, exactly; empty means no comment. */
 export const postedText = (pending: ReviewPending): string => reviewText(pending.kind, pending.body)
 
+export const BAND_TEXT_TOO_LONG = 'review text too long for the band, confirm in the pane'
+const BAND_TEXT_PREFIX = 'post: '
+
+/** What the band's second row says: `<owner>/<repo> #N · head <sha7> · @login`. */
+export function confirmDetails(view: View, pending: PendingAction): string {
+  const snapshot = view.snapshot
+  const pr = snapshot.kind === 'pr' && snapshot.pr.number === pending.prNumber ? snapshot.pr : null
+  const oid = 'headOid' in pending ? pending.headOid : (pr?.headOid ?? '')
+  return `${pending.repo} #${pending.prNumber} · head ${oid === '' ? '-' : shortSha(oid)} · @${pending.login}`
+}
+
+/**
+ * The band's row for a review's text, or null for other kinds. `text` is exactly
+ * what would be posted; `isShown` is false when it cannot be shown whole in one row,
+ * and then the band offers no confirm for it.
+ */
+export function bandReviewRow(pending: PendingAction, columns: number): { text: string; isShown: boolean; isDim: boolean } | null {
+  if (!isReview(pending)) return null
+  const text = postedText(pending)
+  if (pending.kind === 'request-changes' && text.trim() === '') return { text: 'write what should change first, in the pane', isShown: false, isDim: false }
+  if (text === '') return { text: NO_COMMENT, isShown: true, isDim: true }
+  const room = Math.max(1, columns - cellWidth(BAND_TEXT_PREFIX))
+  if (text.includes('\n') || text.includes('\r') || cellWidth(text) > room) return { text: BAND_TEXT_TOO_LONG, isShown: false, isDim: false }
+  return { text, isShown: true, isDim: false }
+}
+
+export const BAND_TEXT_ROW_PREFIX = BAND_TEXT_PREFIX
+
 /** Rows the posted text takes once wrapped at `columns`, one at least. */
 function postedRows(pending: ReviewPending, columns: number): number {
   const text = postedText(pending)
@@ -155,7 +183,7 @@ export function renderConfirm(table: UiTable, view: View, pending: PendingAction
   const confirm = confirmButton(pending)
   rows.push(
     <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-      <Button key={isSecondStep ? 'confirm-final' : 'confirm'} plain hotkey={confirm.hotkey} label={confirm.label} onPress={() => handlers.confirmPending(isSecondStep)} />
+      <Button key={isSecondStep ? 'confirm-final' : 'confirm'} plain hotkey={confirm.hotkey} label={confirm.label} onPress={() => handlers.confirmPending(isSecondStep, isReview(pending) ? pending.body : undefined)} />
       <Button key="cancel" plain hotkey={CANCEL_HOTKEY} label="cancel" onPress={() => handlers.cancelPending()} />
     </Box>,
   )

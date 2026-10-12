@@ -87,7 +87,7 @@ export type StateView = {
   jobs: JobDetail[]
   etags: Record<string, string>
   /** The pull request picked from the list; null when the pane shows the branch's. */
-  selected: { number: number } | null
+  selected: { number: number; repo: string } | null
   selectedSnapshot: Snapshot | null
 }
 

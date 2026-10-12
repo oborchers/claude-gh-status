@@ -401,9 +401,18 @@ export function listAfter(prev: PrList | null, fetched: FetchedList, at: string,
   return { kind: 'error', at, message: failure.message, problem }
 }
 
-/** Milliseconds until the next read of the list. */
-export function listDelayMs(list: PrList | null): number {
-  return listProblemOf(list)?.retryInMs ?? LIST_POLL_MS
+/** Below this many requests left, the list and the counts are read at most every LOW_RATE_POLL_MS. */
+export const LOW_RATE_REMAINING = 500
+export const LOW_RATE_POLL_MS = 300_000
+
+/** Milliseconds until the next read of the list; at least five minutes while the rate limit is low. */
+export function listDelayMs(list: PrList | null, rateLimit: RateLimit | null = null): number {
+  return pollDelayMs(listProblemOf(list)?.retryInMs ?? LIST_POLL_MS, rateLimit)
+}
+
+/** `delay`, raised to LOW_RATE_POLL_MS while fewer than LOW_RATE_REMAINING requests are left. */
+export function pollDelayMs(delay: number, rateLimit: RateLimit | null): number {
+  return rateLimit !== null && rateLimit.remaining < LOW_RATE_REMAINING ? Math.max(delay, LOW_RATE_POLL_MS) : delay
 }
 
 /** Rows the list pane needs for its current page: the page's rows, a header per group shown, and the title and footer lines. */

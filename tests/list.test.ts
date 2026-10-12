@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
-import { COUNTS_QUERY, LIST_QUERY, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, groupItems, normalizeList, paginate, requestedNumbersOf } from '../src/list'
+import { COUNTS_QUERY, LIST_QUERY, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, groupItems, listDelayMs, normalizeList, paginate, pollDelayMs, requestedNumbersOf } from '../src/list'
 import type { ListItem, RepoLocation } from '../src/model'
 
 const location: RepoLocation = { cwd: '/work/app', branch: 'feature', owner: 'acme', repo: 'app', pinnedLogin: null }
@@ -465,5 +465,15 @@ describe('fetchCounts', () => {
     const { exec } = fakeExec([{ match: 'first: 0', stdout: '', exitCode: 1, stderr: 'gh: HTTP 401: Bad credentials' }])
     const result = await fetchCounts(exec, location, 'me')
     expect(result.kind === 'error' && result.failure.kind).toBe('auth')
+  })
+})
+
+describe('the poll delay', () => {
+  test('a low rate limit (under 500 left) keeps the list poll at five minutes at least', () => {
+    expect(listDelayMs(null, null)).toBe(60_000)
+    expect(listDelayMs(null, { remaining: 4000, resetAt: '2026-01-01T00:00:00Z' })).toBe(60_000)
+    expect(listDelayMs(null, { remaining: 499, resetAt: '2026-01-01T00:00:00Z' })).toBe(300_000)
+    expect(pollDelayMs(15_000, { remaining: 0, resetAt: '2026-01-01T00:00:00Z' })).toBe(300_000)
+    expect(pollDelayMs(900_000, { remaining: 0, resetAt: '2026-01-01T00:00:00Z' })).toBe(900_000)
   })
 })

@@ -9,7 +9,7 @@ import { formatDuration, mergeTone, nonCheckBlockers, prBadge, queueLine, verdic
 import { cellWidth, fitSegments, repeatsBadge, snapshotLine, truncate, unavailableHint } from './format'
 import type { Fittable } from './format'
 import { prAnchor } from './anchor'
-import { confirmButton } from './confirm'
+import { BAND_TEXT_ROW_PREFIX, bandReviewRow, confirmButton, confirmDetails, isReview } from './confirm'
 import { badgeBackground, tone } from './colors'
 import type { Palette, Tone } from './colors'
 import type { Handlers, UiTable, View } from './contract'
@@ -288,23 +288,56 @@ function confirmBand(table: UiTable, view: View, handlers: Handlers, pending: Pe
   const confirm = confirmButton(pending)
   const label = pending.kind === 'admin-merge' ? confirm.label : 'confirm'
   const columns = Math.max(10, view.columns)
-  const buttonsWidth = confirm.hotkey.length + 2 + cellWidth(label) + BUTTON_GAP + CANCEL_HOTKEY.length + 2 + cellWidth('cancel') + BUTTON_SPACING
+  const review = bandReviewRow(pending, columns)
+  // A review whose whole text the band cannot show offers no confirm: it can only be cancelled here.
+  const hasConfirm = review === null || review.isShown
+  const confirmWidth = hasConfirm ? confirm.hotkey.length + 2 + cellWidth(label) + BUTTON_GAP : 0
+  const buttonsWidth = confirmWidth + CANCEL_HOTKEY.length + 2 + cellWidth('cancel') + (hasConfirm ? BUTTON_SPACING : BUTTON_GAP)
   const prompt = truncate(confirmPrompt(pending), Math.max(1, columns - buttonsWidth))
-  return (
+  const rows: RenderElement[] = [
     <Box flexDirection="row" flexWrap="nowrap">
       <Box flexShrink={0}>
         <Text color={isSecondStep ? view.palette.failure : undefined} bold wrap="truncate-end">
           {prompt}
         </Text>
       </Box>
-      <Box flexShrink={0} marginLeft={BUTTON_GAP}>
-        <Button key="band-confirm" plain hotkey={confirm.hotkey} label={label} onPress={() => handlers.confirmPending(isSecondStep)} />
-      </Box>
-      <Box flexShrink={0} marginLeft={BUTTON_SPACING}>
+      {hasConfirm ? (
+        <Box flexShrink={0} marginLeft={BUTTON_GAP}>
+          <Button key="band-confirm" plain hotkey={confirm.hotkey} label={label} onPress={() => handlers.confirmPending(isSecondStep, isReview(pending) ? pending.body : undefined)} />
+        </Box>
+      ) : null}
+      <Box flexShrink={0} marginLeft={hasConfirm ? BUTTON_SPACING : BUTTON_GAP}>
         <Button key="band-cancel" plain hotkey={CANCEL_HOTKEY} label="cancel" onPress={() => handlers.cancelPending()} />
       </Box>
-    </Box>
-  )
+    </Box>,
+    <Text dimColor wrap="truncate-end">
+      {truncate(confirmDetails(view, pending), columns)}
+    </Text>,
+  ]
+  if (review !== null) {
+    if (!review.isShown) {
+      rows.push(
+        <Text color={view.palette.failure} bold wrap="truncate-end">
+          {truncate(review.text, columns)}
+        </Text>,
+      )
+    } else if (review.isDim) {
+      rows.push(
+        <Text dimColor wrap="truncate-end">
+          {review.text}
+        </Text>,
+      )
+    } else {
+      // Whole text only: it was checked to fit, so nothing is cut here.
+      rows.push(
+        <Box flexDirection="row" flexWrap="nowrap">
+          <Text dimColor>{BAND_TEXT_ROW_PREFIX}</Text>
+          <Text>{review.text}</Text>
+        </Box>,
+      )
+    }
+  }
+  return <Box flexDirection="column">{rows}</Box>
 }
 
 /** 'no PR for feat/x · 18 open · 3 yours · 2 review requested · @me' and the list button. */

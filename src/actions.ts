@@ -126,7 +126,21 @@ export function rerunArgs(runId: number, location: RepoLocation): string[] {
 const REVIEW_EVENT = { approve: 'APPROVE', 'request-changes': 'REQUEST_CHANGES' } as const
 
 /** The text a review posts: an approval's blank comment is empty, anything else goes as typed. */
-export const reviewText = (kind: 'approve' | 'request-changes', body: string): string => (kind === 'approve' && body.trim() === '' ? '' : body)
+export const reviewText = (kind: 'approve' | 'request-changes', body: string): string => (kind === 'approve' && body.trim() === '' ? '' : clampReviewText(body))
+
+/** Longest review text kept (GitHub's own limit is 65536). */
+export const MAX_REVIEW_CHARS = 65_000
+
+/** The text cut to MAX_REVIEW_CHARS, never between the two halves of a surrogate pair. */
+export function clampReviewText(text: string): string {
+  if (text.length <= MAX_REVIEW_CHARS) return text
+  const last = text.charCodeAt(MAX_REVIEW_CHARS - 1)
+  const isHighHalf = last >= 0xd800 && last <= 0xdbff
+  return text.slice(0, isHighHalf ? MAX_REVIEW_CHARS - 1 : MAX_REVIEW_CHARS)
+}
+
+/** Shown when the text of the confirmation changed between its drawing and the press. */
+export const TEXT_CHANGED = 'text changed, check it and press y again'
 
 /** True for a request for changes without any text to say what should change. */
 export const isReviewTextMissing = (pending: PendingAction): boolean => pending.kind === 'request-changes' && pending.body.trim() === ''
@@ -310,8 +324,24 @@ function successMessage(pending: PendingAction): string {
   }
 }
 
+/**
+ * True when GitHub clearly said no: a GraphQL `errors` body that is not a server fault, or an HTTP 4xx
+ * (408 is a timeout, not a refusal). A run that never started (no gh, no token) wrote nothing either.
+ */
+function isClearRefusal(ran: Extract<GhResult, { isOk: false }>): boolean {
+  if (ran.kind === 'gh-missing') return true
+  if (ran.kind === 'auth' && ran.exitCode === null) return true
+  if (ran.kind === 'server' || ran.kind === 'network' || ran.kind === 'timeout') return false
+  if (graphqlFailure(ran.stdout) !== null) return true
+  return /\bhttp 4(?!08)\d\d\b/i.test(ran.message)
+}
+
 /** True when a failed run may still have reached GitHub: no clear refusal came back. */
-function isResultUnknown(ran: Extract<GhResult, { isOk: false }>): boolean {
+function isResultUnknown(kind: ActionKind, ran: Extract<GhResult, { isOk: false }>): boolean {
+  if (kind === 'approve' || kind === 'request-changes' || kind === 'ready-for-review') {
+    // Reviews and ready-for-review cannot be taken back or repeated safely: only a clear refusal is known.
+    return !isClearRefusal(ran)
+  }
   if (ran.kind === 'timeout' || ran.kind === 'network' || ran.kind === 'server') return true
   return ran.kind === 'failed' && ran.exitCode === null
 }
@@ -383,7 +413,7 @@ export async function execute(
   await tokenFor(exec, pending.login)
   if (!(await isStillPending())) return refuse(CANCELLED)
   const ran = await runGh(exec, args, { login: pending.login, cwd: location.cwd, timeoutMs: WRITE_TIMEOUT_MS })
-  if (!ran.isOk) return refuse(ran.message, isResultUnknown(ran))
+  if (!ran.isOk) return refuse(ran.message, isResultUnknown(pending.kind, ran))
   const failure = pending.kind === 'merge' || pending.kind === 'admin-merge' ? null : graphqlFailure(ran.stdout)
   if (failure !== null) return refuse(failure)
   return { kind: pending.kind, isOk: true, message: successMessage(pending), at }

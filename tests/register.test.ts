@@ -63,6 +63,10 @@ type World = {
   fastRequests(): number
   /** The by-number lookups that ran, as the numbers asked for. */
   numberLookups(): number[]
+  /** The origin remote git answers. */
+  remote: string
+  /** The rate limit remaining the GraphQL answers report. */
+  rateRemaining: number
 }
 
 function answer(world: World, argv: readonly string[]) {
@@ -70,7 +74,7 @@ function answer(world: World, argv: readonly string[]) {
   if (command === 'git') {
     if (args.includes('rev-parse')) return done(0, 'true\n')
     if (args.includes('--show-current')) return done(0, 'feat/things\n')
-    if (args.includes('get-url')) return done(0, 'git@github.com:cli/cli.git\n')
+    if (args.includes('get-url')) return done(0, world.remote + '\n')
     return done(1)
   }
   if (command === 'open' || command === 'xdg-open') return done(0)
@@ -92,13 +96,13 @@ function answer(world: World, argv: readonly string[]) {
     if (query.includes('$yours')) {
       if (world.countsFailure !== null) return world.countsFailure
       const { open, yours, requested } = world.counts
-      return done(0, JSON.stringify({ data: { open: { issueCount: open }, yours: { issueCount: yours }, requested: { issueCount: requested }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T08:02:58Z' } } }))
+      return done(0, JSON.stringify({ data: { open: { issueCount: open }, yours: { issueCount: yours }, requested: { issueCount: requested }, rateLimit: { cost: 1, remaining: world.rateRemaining, resetAt: '2026-10-12T08:02:58Z' } } }))
     }
     if (query.includes('$q: String!')) {
       if (world.listFailure !== null) return world.listFailure
       const isRequested = !query.includes('statusCheckRollup')
       const nodes = isRequested ? [] : world.listNodes
-      return done(0, JSON.stringify({ data: { search: { issueCount: nodes.length, nodes }, rateLimit: { cost: 3, remaining: 4000, resetAt: '2026-10-12T08:02:58Z' } } }))
+      return done(0, JSON.stringify({ data: { search: { issueCount: nodes.length, nodes }, rateLimit: { cost: 3, remaining: world.rateRemaining, resetAt: '2026-10-12T08:02:58Z' } } }))
     }
     if (query.includes('$branch')) return done(0, JSON.stringify(world.fixture.list))
     if (query.includes('$number: Int!')) {
@@ -149,6 +153,8 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     listFailure: null,
     counts: { open: 0, yours: 0, requested: 0 },
     countsFailure: null,
+    remote: 'git@github.com:cli/cli.git',
+    rateRemaining: 4000,
     fullFetches: () => world.argvs.filter(argv => argv[1] === 'api' && argv.some(arg => arg.startsWith('query=') && arg.includes('$branch'))).length,
     fastRequests: () => world.argvs.filter(argv => argv[1] === 'api' && argv.includes('-i')).length,
     numberLookups: () =>
@@ -2062,7 +2068,7 @@ describe('reviews', () => {
 
     test('a clear refusal keeps the confirmation with the message and runs once', async ($, on) => {
       const world = setup(on, prGreen)
-      world.mutationAnswer = done(1, '', 'GraphQL: Review cannot be submitted right now')
+      world.mutationAnswer = done(1, '{"errors":[{"message":"Review cannot be submitted right now"}]}', 'GraphQL: Review cannot be submitted right now')
       await start($, world)
       await runPr($, 'changes')
       const pane = await showPane($)
@@ -2165,14 +2171,15 @@ describe('reviews', () => {
       await pane.unmount()
     })
 
-    test('an empty request for changes cannot be confirmed from the band either', async ($, on) => {
+    test('an empty request for changes cannot be confirmed from the band either: it offers no y, only cancel', async ($, on) => {
       const world = setup(on, prGreen)
       await start($, world)
       await runPr($, 'changes')
       const band = await mountBand($)
       await world.clock.advance(SETTLED_MS)
-      await band.press({ key: 'band-confirm' })
-      await world.clock.settle()
+      expect(await band.find({ key: 'band-confirm' })).toBeUndefined()
+      expect(await band.find({ key: 'band-cancel' })).toBeDefined()
+      expect(await bandSees(band, /write what should change first/)).toBe(true)
       expect(writes(world)).toEqual([])
       await band.unmount()
     })
@@ -2281,5 +2288,317 @@ describe('reviews', () => {
       expect(registered).toEqual([])
       expect(writes(world)).toEqual([])
     })
+  })
+})
+
+// Safety fixes of 0.2: nothing here talks to GitHub, every gh call is the fake above.
+
+describe('safety: unknown results of reviews and ready-for-review', () => {
+  const ownDraft = () => edited(prDraft, { author: { login: 'me' } })
+  const cases: [string, 'approve' | 'changes' | 'ready', ReturnType<typeof done>][] = [
+    ['approve killed by a signal (exit 137)', 'approve', done(137, '', '')],
+    ['approve timed out (exit 124)', 'approve', done(124, '', '')],
+    ['changes terminated (exit 143)', 'changes', done(143, '', 'terminated')],
+    ['approve with a connection reset that also says not found', 'approve', done(1, '', 'Post "https://api.github.com/graphql": read tcp: connection reset by peer (not found)')],
+    ['changes with an EOF', 'changes', done(1, '', 'Post "https://api.github.com/graphql": EOF')],
+    ['ready with a TLS handshake failure', 'ready', done(1, '', 'net/http: TLS handshake timeout')],
+    ['ready with a broken pipe', 'ready', done(1, '', 'write tcp: broken pipe')],
+    ['approve with a 502 that also says not found', 'approve', done(1, '', 'gh: HTTP 502 Bad Gateway: repository not found')],
+    ['ready with a failure that says nothing clear', 'ready', done(1, '', 'gh: something odd happened')],
+  ]
+  for (const [name, command, answer] of cases) {
+    test(`${name}: the dialog is cleared, the status refreshed, nothing is retried`, async ($, on) => {
+      const world = setup(on, command === 'ready' ? ownDraft() : prGreen)
+      world.mutationAnswer = answer
+      await start($, world)
+      await runPr($, command)
+      const pane = await showPane($)
+      if (command === 'changes') {
+        await pane.input({ key: 'review-body', text: 'please change x', kind: 'change' })
+        await world.clock.settle()
+      }
+      await world.clock.advance(SETTLED_MS)
+      const before = world.fullFetches()
+      await pane.press({ key: 'confirm' })
+      await world.clock.settle()
+      expect(writes(world)).toHaveLength(1)
+      expect(await isConfirming(pane)).toBe(false)
+      expect(world.toasts.some(text => text.endsWith('result unknown, refreshed status'))).toBe(true)
+      // the re-check before the write, and the refresh after it
+      expect(world.fullFetches()).toBeGreaterThanOrEqual(before + 2)
+      await world.clock.advance(120_000)
+      expect(writes(world)).toHaveLength(1)
+      await pane.unmount()
+    })
+  }
+
+  test('a clear refusal (an HTTP 422) is not unknown: the dialog stays with the message', async ($, on) => {
+    const world = setup(on, prGreen)
+    world.mutationAnswer = done(1, '', 'gh: Validation Failed (HTTP 422)')
+    await start($, world)
+    await runPr($, 'approve')
+    const pane = await showPane($)
+    await world.clock.advance(SETTLED_MS)
+    await pane.press({ key: 'confirm' })
+    await world.clock.settle()
+    expect(writes(world)).toHaveLength(1)
+    expect(await isConfirming(pane)).toBe(true)
+    expect(world.toasts.some(text => text.endsWith('result unknown, refreshed status'))).toBe(false)
+    await pane.unmount()
+  })
+})
+
+describe('safety: the fresh snapshot goes to the slot it belongs to', () => {
+  const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+  const merge = ['gh', 'pr', 'merge', '14580', '--squash', '--match-head-commit', HEAD, '-R', 'cli/cli']
+  /** The branch has 14580 (green); the repository also has 14640 (blocked), which the pane shows as a pick. */
+  const worldWithPickedOther = (on: On): World => {
+    const world = setup(on, prGreen)
+    world.others[14640] = prFailing
+    return world
+  }
+
+  test('the branch pull request confirmed in the band while another one is picked is re-checked by branch, and the pick keeps its slot', async ($, on) => {
+    const world = worldWithPickedOther(on)
+    await start($, world)
+    await runPr($, '14640')
+    await world.clock.settle()
+    const band = await mountBand($)
+    await band.press({ key: 'band-merge' })
+    await world.clock.settle()
+    await world.clock.advance(SETTLED_MS)
+    const before = world.argvs.length
+    await band.press({ key: 'band-confirm' })
+    await world.clock.settle()
+    expect(writes(world)).toEqual([merge])
+    const writeAt = world.argvs.findIndex((argv, index) => index >= before && argv[1] === 'pr' && argv[2] === 'merge')
+    const queries = world.argvs
+      .slice(before, writeAt)
+      .filter(argv => argv[1] === 'api')
+      .map(argv => argv.find(arg => arg.startsWith('query=')) ?? '')
+    expect(queries.some(query => query.includes('$branch'))).toBe(true)
+    expect(queries.some(query => query.includes('$number: Int!'))).toBe(false)
+    const pane = await showPane($)
+    expect(await sees(pane, /PR #14640 \(selected\)/)).toBe(true)
+    await pane.unmount()
+    await band.unmount()
+  })
+
+  test('the picked pull request confirmed in the pane is re-checked by number, and the band keeps the branch pull request', async ($, on) => {
+    const world = worldWithPickedOther(on)
+    await start($, world)
+    await runPr($, '14640')
+    await world.clock.settle()
+    await runPr($, 'approve')
+    const pane = await showPane($)
+    await world.clock.advance(SETTLED_MS)
+    const before = world.argvs.length
+    await pane.press({ key: 'confirm' })
+    await world.clock.settle()
+    const writeAt = world.argvs.findIndex((argv, index) => index >= before && argv.some(arg => arg.startsWith('query=mutation')))
+    const queries = world.argvs
+      .slice(before, writeAt)
+      .filter(argv => argv[1] === 'api')
+      .map(argv => argv.find(arg => arg.startsWith('query=')) ?? '')
+    expect(queries.some(query => query.includes('$number: Int!'))).toBe(true)
+    expect(queries.some(query => query.includes('$branch'))).toBe(false)
+    const band = await mountBand($)
+    expect(await bandHas(band, /PR #14580/)).toBe(true)
+    await band.unmount()
+    await pane.unmount()
+  })
+
+  const bandHas = async (band: { find(target: { text: RegExp }): Promise<unknown> }, text: RegExp) => (await band.find({ text })) !== undefined
+
+  test('the pane keeps no b: back button while any confirmation waits, even one that only the band draws', async ($, on) => {
+    const world = worldWithPickedOther(on)
+    await start($, world)
+    await runPr($, '14640')
+    await world.clock.settle()
+    const pane = await showPane($)
+    expect(await pane.find({ key: 'back' })).toBeDefined()
+    const band = await mountBand($)
+    await band.press({ key: 'band-merge' })
+    await world.clock.settle()
+    expect(await band.find({ key: 'band-confirm' })).toBeDefined()
+    expect(await pane.find({ key: 'back' })).toBeUndefined()
+    await band.press({ key: 'band-cancel' })
+    await world.clock.settle()
+    expect(await pane.find({ key: 'back' })).toBeDefined()
+    // and the pane's own confirmation hides it as well
+    await runPr($, 'approve')
+    await world.clock.settle()
+    expect(await isConfirming(pane)).toBe(true)
+    expect(await pane.find({ key: 'back' })).toBeUndefined()
+    await pane.unmount()
+    await band.unmount()
+  })
+})
+
+describe('safety: one source of truth for the review text', () => {
+  const NODE_ID = 'PR_kwDODKw3uc8AAAABGVY_uA'
+  const review = (kind: 'APPROVE' | 'REQUEST_CHANGES', body: string) => [
+    'api', 'graphql', '-f', `query=${REVIEW_MUTATION}`, '-f', `pullRequestId=${NODE_ID}`, '-f', `commitOID=${HEAD}`, '-f', `event=${kind}`, '-f', `body=${body}`,
+  ]
+  const type = async (ui: Awaited<ReturnType<typeof showPane>>, world: World, text: string) => {
+    await ui.input({ key: 'review-body', text, kind: 'change' })
+    await world.clock.settle()
+  }
+  const mountBand = ($: Engine) => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+
+  test('the field, the band and the press share the text in the pending review at once', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    await runPr($, 'changes')
+    const pane = await showPane($)
+    const band = await mountBand($)
+    await type(pane, world, 'first')
+    expect(await band.find({ text: /first/ })).toBeDefined()
+    expect((await pane.find({ key: 'review-body' }))?.props).toMatchObject({ value: 'first' })
+    await type(pane, world, 'second')
+    expect(await band.find({ text: /second/ })).toBeDefined()
+    expect(await band.find({ text: /first/ })).toBeUndefined()
+    expect((await pane.find({ key: 'review-body' }))?.props).toMatchObject({ value: 'second' })
+    await world.clock.advance(SETTLED_MS)
+    await band.press({ key: 'band-confirm' })
+    await world.clock.settle()
+    expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'second')]])
+    await band.unmount()
+    await pane.unmount()
+  })
+
+  test('typing 65,000 characters and more posts 65,000, cut before a split emoji', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    await runPr($, 'changes')
+    const pane = await showPane($)
+    await type(pane, world, `${'a'.repeat(64_999)}😀${'b'.repeat(500)}`)
+    await world.clock.advance(SETTLED_MS)
+    await pane.press({ key: 'confirm' })
+    await world.clock.settle()
+    expect(writes(world)).toEqual([['gh', ...review('REQUEST_CHANGES', 'a'.repeat(64_999))]])
+    await pane.unmount()
+  })
+})
+
+describe('safety: timers do not multiply on a second session.start', () => {
+  test('the branch refresh timer ticks as often after a second start as after the first', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    const first = world.fastRequests()
+    await world.clock.advance(5000)
+    const afterOne = world.fastRequests() - first
+    expect(afterOne).toBeGreaterThan(0)
+    await start($, world)
+    const second = world.fastRequests()
+    await world.clock.advance(5000)
+    expect(world.fastRequests() - second).toBe(afterOne)
+  })
+
+  test('the list poll runs once per minute after two starts', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const before = listQueries(world).length
+    await world.clock.advance(61_000)
+    expect(listQueries(world).length - before).toBe(1)
+  })
+
+  test('the counts poll runs once per five minutes after two starts', async ($, on) => {
+    const world = listWorld(on)
+    world.counts = { open: 30, yours: 2, requested: 3 }
+    await start($, world)
+    await start($, world)
+    const before = countsQueries(world).length
+    await world.clock.advance(301_000)
+    expect(countsQueries(world).length - before).toBe(1)
+  })
+
+  test('a low rate limit holds the list poll to five minutes', async ($, on) => {
+    const world = listWorld(on)
+    world.rateRemaining = 100
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(1)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(1)
+    await world.clock.advance(240_000)
+    expect(listQueries(world)).toHaveLength(2)
+  })
+
+  test('with plenty of rate limit left the list poll stays at one minute', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    expect(listQueries(world)).toHaveLength(1)
+    await world.clock.advance(61_000)
+    expect(listQueries(world)).toHaveLength(2)
+  })
+})
+
+describe('safety: a change of repository drops the pick and the pending write', () => {
+  const otherRepo = 'git@github.com:other/repo.git'
+
+  test('the pick is stored with its repository and shown while the repository is the same', async ($, on) => {
+    const world = setup(on, prFailing)
+    world.others[14580] = prGreen
+    await start($, world)
+    await runPr($, '14580')
+    await world.clock.settle()
+    const pane = await showPane($)
+    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    await $.classic.CwdChanged({ old_cwd: '/work/cli', new_cwd: '/work/cli/sub' })
+    await world.clock.settle()
+    expect(await sees(pane, /PR #14580 \(selected\)/)).toBe(true)
+    await pane.unmount()
+  })
+
+  test('another repository clears the pick, its snapshot and the pending write', async ($, on) => {
+    const world = setup(on, prFailing)
+    world.others[14580] = prGreen
+    await start($, world)
+    await runPr($, '14580')
+    await world.clock.settle()
+    await runPr($, 'approve')
+    const pane = await showPane($)
+    expect(await isConfirming(pane)).toBe(true)
+    world.remote = otherRepo
+    await $.classic.CwdChanged({ old_cwd: '/work/cli', new_cwd: '/work/other' })
+    await world.clock.settle()
+    expect(await sees(pane, /\(selected\)/)).toBe(false)
+    expect(await isConfirming(pane)).toBe(false)
+    await world.clock.advance(SETTLED_MS)
+    await pane.press({ key: 'confirm' }).catch(() => undefined)
+    await world.clock.settle()
+    expect(writes(world)).toEqual([])
+    await pane.unmount()
+  })
+
+  test('a pending write for the branch pull request does not follow the session into another repository', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    await runPr($, 'merge')
+    const pane = await showPane($)
+    expect(await isConfirming(pane)).toBe(true)
+    world.remote = otherRepo
+    await $.classic.CwdChanged({ old_cwd: '/work/cli', new_cwd: '/work/other' })
+    await world.clock.settle()
+    expect(await isConfirming(pane)).toBe(false)
+    expect(writes(world)).toEqual([])
+    await pane.unmount()
+  })
+
+  test('picking outside a GitHub repository is refused', async ($, on) => {
+    const world = setup(on, prGreen)
+    await start($, world)
+    world.remote = 'not-a-github-remote'
+    const ran = await runPr($, '14580')
+    expect(ran.text).toContain('No GitHub repository here')
   })
 })

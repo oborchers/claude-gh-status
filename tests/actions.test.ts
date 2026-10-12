@@ -7,6 +7,8 @@ import {
   ENQUEUE_MUTATION,
   CANCELLED,
   CHANGES_NEED_TEXT,
+  MAX_REVIEW_CHARS,
+  clampReviewText,
   HEAD_CHANGED,
   READY_MUTATION,
   REVIEW_MUTATION,
@@ -872,7 +874,7 @@ describe('execute reviews', () => {
     expect(gh.calls).toEqual([])
   })
 
-  test('a timeout, network error or 5xx is an unknown result; a clear refusal and a GraphQL error are not', async () => {
+  test('a timeout, network error or 5xx is an unknown result; a GraphQL errors body and an HTTP 4xx are clear refusals', async () => {
     const run = async (kind: 'approve' | 'request-changes' | 'ready-for-review', answer: Exec) => {
       forgetTokens()
       const pr = kind === 'ready-for-review' ? ownDraft() : reviewable()
@@ -890,7 +892,12 @@ describe('execute reviews', () => {
       expect(await run(kind, failing('gh: HTTP 502'))).toMatchObject({ isOk: false, isUnknown: true })
       expect(await run(kind, failing('gh: HTTP 504'))).toMatchObject({ isOk: false, isUnknown: true })
       expect(await run(kind, failing('error connecting: could not resolve host'))).toMatchObject({ isOk: false, isUnknown: true })
-      expect((await run(kind, failing('GraphQL: Review cannot be submitted by the author'))).isUnknown).toBeUndefined()
+      expect((await run(kind, failing('gh: Resource not accessible by integration (HTTP 403)'))).isUnknown).toBeUndefined()
+      expect((await run(kind, failing('gh: Validation Failed (HTTP 422)'))).isUnknown).toBeUndefined()
+      const withErrors: Exec = async argv =>
+        argv[1] === 'auth' ? token : { exitCode: 1, stdout: '{"errors":[{"message":"Review cannot be submitted by the author"}]}', stderr: 'gh: Review cannot be submitted by the author', isStdoutTruncated: false, isStderrTruncated: false }
+      expect(await run(kind, withErrors)).toMatchObject({ isOk: false, message: 'gh: Review cannot be submitted by the author' })
+      expect((await run(kind, withErrors)).isUnknown).toBeUndefined()
     }
     const graphqlError: Exec = async argv =>
       argv[1] === 'auth' ? token : { exitCode: 0, stdout: '{"errors":[{"message":"Can not approve your own pull request"}]}', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
@@ -918,5 +925,36 @@ describe('execute reviews', () => {
     expect(transitionToastPrefix('approve', 5)).toBeNull()
     expect(transitionToastPrefix('request-changes', 5)).toBeNull()
     expect(transitionToastPrefix('ready-for-review', 5)).toBeNull()
+  })
+})
+
+describe('review text limit', () => {
+  test('text up to 65,000 characters is kept whole', () => {
+    expect(MAX_REVIEW_CHARS).toBe(65_000)
+    const exact = 'a'.repeat(65_000)
+    expect(clampReviewText(exact)).toBe(exact)
+    expect(clampReviewText('short')).toBe('short')
+    expect(clampReviewText('')).toBe('')
+  })
+
+  test('longer text is cut at 65,000 characters', () => {
+    expect(clampReviewText('a'.repeat(70_000))).toBe('a'.repeat(65_000))
+  })
+
+  test('the cut never splits a surrogate pair', () => {
+    // The emoji's two halves sit at indexes 64,999 and 65,000: cutting at 65,000 would leave a lone high half.
+    const text = `${'a'.repeat(64_999)}😀${'b'.repeat(50)}`
+    const cut = clampReviewText(text)
+    expect(cut).toBe('a'.repeat(64_999))
+    expect([...cut].every(char => char.codePointAt(0) !== undefined && !(char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdfff))).toBe(true)
+    // A pair that ends exactly on the limit stays whole.
+    const whole = `${'a'.repeat(64_998)}😀${'b'.repeat(50)}`
+    expect(clampReviewText(whole)).toBe(`${'a'.repeat(64_998)}😀`)
+  })
+
+  test('the review arguments carry at most the clamped text', () => {
+    const args = reviewArgs('PR_1', 'request-changes', OID, 'z'.repeat(66_000))
+    const body = args.find(arg => arg.startsWith('body=')) ?? ''
+    expect(body.length).toBe('body='.length + 65_000)
   })
 })

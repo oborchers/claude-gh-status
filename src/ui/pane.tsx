@@ -448,7 +448,8 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
 function backRows(table: UiTable, view: View, handlers: Handlers): RenderElement[] {
   const { Button } = table
   const { back } = handlers
-  if (view.isSelected !== true || back === undefined) return []
+  // While a confirmation waits, `b` belongs to its final step: no other button may take it.
+  if (view.isSelected !== true || back === undefined || view.pending !== null || view.hasPending === true) return []
   return [<Button key="back" plain hotkey="b" label="back" onPress={() => back()} />]
 }
 
@@ -570,11 +571,11 @@ export function paneRowCount(view: View): number {
   if (snapshot.kind !== 'pr' || status === null) {
     const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
     const wrapped = Math.max(1, Math.ceil(cellWidth(text) / Math.max(1, view.columns)))
-    return Math.max(MIN_PANE_ROWS, wrapped + 1 + (view.isSelected === true ? BACK_ROWS : 0))
+    return Math.max(MIN_PANE_ROWS, wrapped + 1 + (view.isSelected === true && view.pending === null ? BACK_ROWS : 0))
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS + (snapshot.stale ? 1 : 0) + (view.isSelected === true ? BACK_ROWS : 0),
+    HEADER_ROWS + (snapshot.stale ? 1 : 0) + (view.isSelected === true && view.pending === null ? BACK_ROWS : 0),
     mergeRowCount(view, pr, status, snapshot.account.login),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),

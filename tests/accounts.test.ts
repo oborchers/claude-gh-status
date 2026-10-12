@@ -157,3 +157,17 @@ describe('resolveAccount', () => {
     expect(result).toEqual({ kind: 'no-access', tried: [] })
   })
 })
+
+describe('canRead passes strings as strings', () => {
+  test('owner and name go as -f, never -F (a repository named "123", "true" or "@x" stays text)', async () => {
+    forgetTokens()
+    const world = fakeWorld({ readable: ['me'] })
+    expect(await canRead(world.exec, 'me', '123', 'true')).toBe(true)
+    const probe = world.argvs.find(argv => argv[1] === 'api') ?? []
+    expect(probe).toContain('o=123')
+    expect(probe).toContain('n=true')
+    expect(probe[probe.indexOf('o=123') - 1]).toBe('-f')
+    expect(probe[probe.indexOf('n=true') - 1]).toBe('-f')
+    expect(probe).not.toContain('-F')
+  })
+})

@@ -586,7 +586,7 @@ describe('createRefresher: selected target', () => {
   const picked = makePr({ number: 7, id: 'PR_seven' })
   const selectedWorld = (overrides: { toasts?: boolean } = {}): Fakes => {
     const world = fakes({ ...overrides, target: 'selected' })
-    world.state.selected = { number: 7 }
+    world.state.selected = { number: 7, repo: 'o/r' }
     world.state.snapshot = makeSnapshot(makePr())
     world.setFetch(fetchOf(picked))
     return world
@@ -618,7 +618,7 @@ describe('createRefresher: selected target', () => {
 
   test("the branch's own pull request is not fetched twice and leaves selectedSnapshot empty", async () => {
     const world = selectedWorld()
-    world.state.selected = { number: 42 }
+    world.state.selected = { number: 42, repo: 'o/r' }
     world.state.selectedSnapshot = makeSnapshot(picked)
     await createRefresher(world.deps).refresh('start')
     expect(world.calls).toEqual([])
@@ -702,7 +702,7 @@ describe('createRefresher: branch target with a picked pull request', () => {
 
   test('keeps the band snapshot fresh but leaves the jobs to the picked one', async () => {
     const world = fakes()
-    world.state.selected = { number: 7 }
+    world.state.selected = { number: 7, repo: 'o/r' }
     world.state.jobs = [{ jobId: 1, runId: 70, name: 'build', state: 'running', currentStep: null, failedStep: null, url: null }]
     world.setPaneOpen(true)
     world.setFetch(fetchOf(running))
@@ -714,7 +714,7 @@ describe('createRefresher: branch target with a picked pull request', () => {
 
   test("fetches jobs when the pick is the branch's own pull request", async () => {
     const world = fakes()
-    world.state.selected = { number: 42 }
+    world.state.selected = { number: 42, repo: 'o/r' }
     world.setPaneOpen(true)
     world.setFetch(fetchOf(running))
     await createRefresher(world.deps).refresh('start')

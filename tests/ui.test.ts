@@ -1552,3 +1552,176 @@ describe('the review buttons and confirmation', () => {
     expect(paneRowCount({ ...view, pending })).toBeGreaterThanOrEqual(confirmRows + 4)
   })
 })
+
+describe('the band confirm shows what will happen', () => {
+  const asked = (kind: PendingAction['kind'], body: string, columns: number, overrides: Partial<PullRequest> = {}): { view: View; pending: PendingAction } => {
+    const view = prView({ author: 'octocat', checks: [makeCheck()], ...overrides }, columns)
+    const pending = buildPending(kind, view.snapshot, undefined, 0, body)
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { view: { ...view, pending }, pending }
+  }
+  const details = (view: View): string => {
+    if (view.snapshot.kind !== 'pr') throw new Error('no pull request')
+    return `acme/app #${view.snapshot.pr.number} · head ${view.snapshot.pr.headOid.slice(0, 7)} · @me`
+  }
+  const bodyHandlers = (calls: Calls): Handlers => handlersFor(calls, { confirmPending: (isSecondStep, drawnBody) => void calls.push(`confirmPending ${String(isSecondStep)} ${String(drawnBody)}`) })
+
+  for (const surface of SURFACES) {
+    test(`a merge shows owner/repo, number, short head and account, and still confirms on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: Calls = []
+      const { view } = asked('merge', '', 120, { author: 'me' })
+      const ui = await rig.band($, surface, view, bodyHandlers(calls))
+      const text = await textOf(ui)
+      expect(text).toContain('merge #42 (squash)?')
+      expect(text).toContain(details(view))
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['y', 'n'])
+      await ui.press({ key: 'band-confirm' })
+      expect(calls).toEqual(['confirmPending false undefined'])
+      await ui.unmount()
+    })
+
+    test(`a review shows the exact text it will post, and the press hands that text over on ${surface}`, async ($, on) => {
+      const rig = createRig(on)
+      const calls: Calls = []
+      for (const kind of ['approve', 'request-changes'] as const) {
+        const { view } = asked(kind, 'rename x and add a test', 120)
+        const ui = await rig.band($, surface, view, bodyHandlers(calls))
+        const text = await textOf(ui)
+        expect(text).toContain(details(view))
+        expect(text).toContain('rename x and add a test')
+        expect(text).not.toContain('too long')
+        await ui.press({ key: 'band-confirm' })
+        await ui.unmount()
+      }
+      expect(calls).toEqual(['confirmPending false rename x and add a test', 'confirmPending false rename x and add a test'])
+    })
+  }
+
+  test('an approval without text says (no comment)', async ($, on) => {
+    const rig = createRig(on)
+    for (const body of ['', '   \n ']) {
+      const { view } = asked('approve', body, 120)
+      const ui = await rig.band($, 'terminal', view, handlersFor([]))
+      expect(await textOf(ui)).toContain('(no comment)')
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['y', 'n'])
+      await ui.unmount()
+    }
+  })
+
+  test('details that do not fit end in an ellipsis; they are cut only then', async ($, on) => {
+    const rig = createRig(on)
+    const wide = asked('approve', '', 120)
+    const full = details(wide.view)
+    const roomy = await rig.band($, 'terminal', wide.view, handlersFor([]))
+    expect(await textOf(roomy)).toContain(full)
+    expect(await textOf(roomy)).not.toContain('…')
+    await roomy.unmount()
+    const narrow = asked('approve', '', cellWidth(full) - 4)
+    const cut = await rig.band($, 'terminal', narrow.view, handlersFor([]))
+    const rows = rowsOf(await cut.drawn())
+    const row = rows.find((line) => line.startsWith('acme/app #42')) ?? ''
+    expect(row.endsWith('…')).toBe(true)
+    expect(cellWidth(row)).toBeLessThanOrEqual(cellWidth(full) - 4)
+    await cut.unmount()
+  })
+
+  test('review text that fills the row exactly is shown whole, not cut', async ($, on) => {
+    const rig = createRig(on)
+    const columns = 60
+    const text = 'x'.repeat(columns - cellWidth('post: '))
+    const { view } = asked('request-changes', text, columns)
+    const ui = await rig.band($, 'terminal', view, handlersFor([]))
+    const drawn = await textOf(ui)
+    expect(drawn).toContain(text)
+    expect(drawn).not.toContain('too long')
+    expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['y', 'n'])
+    await ui.unmount()
+  })
+
+  test('review text that does not fit the band row offers no y: cancel only, and says where to confirm', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const long = 'x'.repeat(200)
+    for (const [kind, body] of [['approve', long], ['request-changes', long], ['request-changes', 'one line\nand another']] as const) {
+      const { view } = asked(kind, body, 80)
+      const ui = await rig.band($, 'terminal', view, bodyHandlers(calls))
+      const text = await textOf(ui)
+      expect(text).toContain('review text too long for the band, confirm in the pane')
+      expect(text).not.toContain(long)
+      expect(text).toContain(details(view))
+      expect(await ui.find({ key: 'band-confirm' })).toBeUndefined()
+      expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(['n'])
+      await ui.press({ key: 'band-cancel' })
+      await ui.unmount()
+    }
+    expect(calls).toEqual(['cancelPending', 'cancelPending', 'cancelPending'])
+  })
+
+  test('a request for changes without text offers no y in the band either', async ($, on) => {
+    const rig = createRig(on)
+    const { view } = asked('request-changes', ' ', 120)
+    const ui = await rig.band($, 'terminal', view, handlersFor([]))
+    expect(await ui.find({ key: 'band-confirm' })).toBeUndefined()
+    expect(await textOf(ui)).toContain('write what should change first')
+    await ui.unmount()
+  })
+
+  test('the pane confirm hands the drawn review text over too', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const { view } = asked('request-changes', 'drawn text', 100)
+    const ui = await rig.pane($, 'terminal', view, bodyHandlers(calls))
+    await ui.press({ key: 'confirm' })
+    expect(calls).toEqual(['confirmPending false drawn text'])
+    await ui.unmount()
+  })
+})
+
+describe('keys of the confirmation do not collide', () => {
+  const pendingView = (view: View, kind: PendingAction['kind'], overrides: Partial<View> = {}): View => {
+    const pending = buildPending(kind, view.snapshot, undefined, 0, 'x')
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { ...view, pending, ...overrides }
+  }
+
+  test('the pane hides b: back while a confirmation waits, and draws it again after', async ($, on) => {
+    const rig = createRig(on)
+    const base = { ...prView({ author: 'octocat', checks: [makeCheck()] }, 100), isSelected: true }
+    const back: Partial<Handlers> = { back: () => {} }
+    const plain = await rig.pane($, 'terminal', base, handlersFor([], back))
+    expect(await plain.find({ key: 'back' })).toBeDefined()
+    await plain.unmount()
+    for (const kind of ['approve', 'request-changes'] as const) {
+      const ui = await rig.pane($, 'terminal', pendingView(base, kind), handlersFor([], back))
+      expect(await ui.find({ key: 'back' })).toBeUndefined()
+      expect(await textOf(ui)).not.toContain('b: back')
+      await ui.unmount()
+    }
+  })
+
+  test('a confirmation drawn only in the band (the pane shows a pick) hides the pane back button too', async ($, on) => {
+    const rig = createRig(on)
+    const base = { ...prView({ author: 'octocat', checks: [makeCheck()] }, 100), isSelected: true }
+    const ui = await rig.pane($, 'terminal', { ...base, hasPending: true }, handlersFor([], { back: () => {} }))
+    expect(await ui.find({ key: 'back' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('every confirm key of the pane and of the band appears once per site', async ($, on) => {
+    const rig = createRig(on)
+    const base = { ...prView({ author: 'octocat', checks: [makeCheck()] }, 100), isSelected: true }
+    for (const kind of ['approve', 'request-changes'] as const) {
+      const pane = await rig.pane($, 'terminal', pendingView(base, kind), handlersFor([], { back: () => {}, openList: () => {} }))
+      const paneKeys = hotkeysOf(await pane.findAll({ type: 'Button' }))
+      expect(new Set(paneKeys).size).toBe(paneKeys.length)
+      expect(paneKeys).toEqual(expect.arrayContaining(['y', 'n']))
+      expect(paneKeys).not.toContain('b')
+      await pane.unmount()
+      const band = await rig.band($, 'terminal', pendingView(base, kind), handlersFor([]))
+      const bandKeys = hotkeysOf(await band.findAll({ type: 'Button' }))
+      expect(new Set(bandKeys).size).toBe(bandKeys.length)
+      await band.unmount()
+    }
+  })
+})

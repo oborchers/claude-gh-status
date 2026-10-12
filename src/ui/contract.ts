@@ -30,6 +30,8 @@ export type View = {
   outcome: ActionOutcome | null
   /** The write action waiting for a confirm press; the band and the pane's Merge section both show its controls while set. */
   pending: PendingAction | null
+  /** True while any confirmation waits, even one drawn only in the other site (the band's while the pane shows a pick). The pane then keeps `b` free. */
+  hasPending?: boolean
   /** Open, yours and review-requested counts for the band; null until fetched. */
   counts?: ListCounts | null
 }
@@ -85,14 +87,16 @@ export type Handlers = {
   requestApprove?(): void
   requestChanges?(): void
   requestReady?(): void
-  /** The review field's text, kept in the pending review; it is posted only by the confirm press, never by Enter. */
+  /** The review field's text, kept in the pending review's body (the one source of truth); it is posted only by the confirm press, never by Enter. */
   setReviewBody?(text: string): void
   /**
    * The confirm press. `isSecondStep` is the admin step the pressed button was
    * drawn for; a press from another step than the live one is ignored, so a
    * double press of the first step's key never reaches the final confirmation.
+   * `drawnBody` is the review text the button was drawn with: a review whose
+   * current text differs is refused, never posted.
    */
-  confirmPending(isSecondStep?: boolean): void
+  confirmPending(isSecondStep?: boolean, drawnBody?: string): void
   /** The cancel key: clears the pending action, no write. */
   cancelPending(): void
   selectMethod(method: MergeMethod): void

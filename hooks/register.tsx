@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandInfo, EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
-import { CHANGES_NEED_TEXT, RECHECK_FAILED, RULES_CHANGED, availableActions, bypassedRules, buildPending, ciReference, confirmStep, execute, executeRerun, isReviewTextMissing, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
+import { CHANGES_NEED_TEXT, RECHECK_FAILED, RULES_CHANGED, TEXT_CHANGED, availableActions, bypassedRules, buildPending, ciReference, clampReviewText, confirmStep, execute, executeRerun, isReviewTextMissing, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
 import { fastCheck } from '../src/etag'
 import { runGh, tokenFor } from '../src/gh'
@@ -10,8 +10,8 @@ import { parseAccountConfig, resolveAccount } from '../src/accounts'
 import type { AccountMemory } from '../src/accounts'
 import { readLocation } from '../src/git'
 import { fetchJobs } from '../src/jobs'
-import { COUNTS_POLL_MS, COUNTS_RETRY_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount } from '../src/list'
-import type { AccountChoice, ListCounts, MergeMethod, PendingAction, PrList, RepoLocation, Snapshot } from '../src/model'
+import { COUNTS_POLL_MS, COUNTS_RETRY_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount, pollDelayMs } from '../src/list'
+import type { AccountChoice, ListCounts, MergeMethod, PendingAction, PrList, RateLimit, RepoLocation, Snapshot } from '../src/model'
 import { fetchPullRequest, fetchPullRequestByNumber } from '../src/query'
 import { createRefresher, etagsOf, mergeEtags, nextDelayMs } from '../src/scheduler'
 import type { RefreshReason, RefreshTarget, RefresherDeps, SchedulerConfig } from '../src/scheduler'
@@ -83,11 +83,22 @@ const selectedSnapshotState = atom({ plugin: 'gh-status', key: 'selectedSnapshot
 const listState = atom({ plugin: 'gh-status', key: 'list' } as const, null)
 const listPageState = atom({ plugin: 'gh-status', key: 'listPage' } as const, 0)
 const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } as const, false)
-const reviewBodyState = atom({ plugin: 'gh-status', key: 'reviewBody' } as const, '')
 const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
 
-/** Longest review text the field keeps (GitHub's own limit is 65536). */
-const MAX_REVIEW_CHARS = 65_536
+/**
+ * The timers of the running session, at module scope: a second session.start (hot reload,
+ * resume) cancels the first one's before it builds its own, so timers never multiply.
+ * `generation` lets the flights of an older start notice they must not re-arm anything.
+ */
+const timers: { branch: Timer | null; list: Timer | null; counts: Timer | null } = { branch: null, list: null, counts: null }
+let generation = 0
+
+function cancelTimers(): void {
+  for (const key of ['branch', 'list', 'counts'] as const) {
+    timers[key]?.cancel()
+    timers[key] = null
+  }
+}
 
 /** One confirm press at a time: a second press while one is being handled is dropped. */
 const confirmGuard = { isBusy: false }
@@ -131,6 +142,18 @@ function seenKey(snapshot: Extract<Snapshot, { kind: 'pr' }>): string {
   return `${snapshot.location.owner ?? ''}/${snapshot.location.repo ?? ''}#${snapshot.pr.number}`
 }
 
+type Pick = { number: number; repo: string }
+
+/** The lowercase `owner/repo` a snapshot belongs to, or null when it has no repository. */
+function snapshotSlug(snapshot: Snapshot): string | null {
+  return 'location' in snapshot && snapshot.location !== null ? (repoSlug(snapshot.location)?.toLowerCase() ?? null) : null
+}
+
+/** True when the snapshot is the pull request the pick names: same number, same repository. */
+function isPick(selected: Pick, snapshot: PrSnapshot): boolean {
+  return snapshot.pr.number === selected.number && snapshotSlug(snapshot) === selected.repo
+}
+
 /**
  * The snapshot a subject shows. The band always shows the branch's. The pane shows
  * the picked pull request when one is set: its own snapshot, the branch's when the
@@ -141,8 +164,8 @@ async function subjectSnapshot($: EngineInterface, subject: Subject): Promise<{ 
   const selected = subject === 'pane' ? await read($, selectedState) : null
   if (selected === null) return { snapshot: branch, isSelected: false }
   const own = await read($, selectedSnapshotState)
-  if (own !== null && (own.kind !== 'pr' || own.pr.number === selected.number)) return { snapshot: own, isSelected: true }
-  if (branch.kind === 'pr' && branch.pr.number === selected.number) return { snapshot: branch, isSelected: true }
+  if (own !== null && (own.kind !== 'pr' || isPick(selected, own))) return { snapshot: own, isSelected: true }
+  if (branch.kind === 'pr' && isPick(selected, branch)) return { snapshot: branch, isSelected: true }
   return { snapshot: { kind: 'loading', at: '' }, isSelected: true }
 }
 
@@ -166,7 +189,7 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   // With a pick set, a confirmation shows only where its pull request is shown.
   const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
   const counts = await read($, countsState)
-  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, counts }
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts }
 }
 
 async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<ListView> {
@@ -257,7 +280,6 @@ async function requestAction($: EngineInterface, kind: ActionKind, subject: Subj
     return `That is not available for PR #${snapshot.pr.number} right now. Available: ${offered.length === 0 ? 'nothing' : offered.join(', ')}.`
   }
   await update($, outcomeState, () => null)
-  await update($, reviewBodyState, () => '')
   await update($, pendingState, () => pending)
   // Warm the account token now, so the write does not wait on a process spawn after the press.
   void tokenFor((argv, init) => $.process.run(argv, init), pending.login)
@@ -279,17 +301,15 @@ async function requestAutoMerge($: EngineInterface, subject: Subject, isFromComm
 
 async function cancelPending($: EngineInterface): Promise<void> {
   await update($, pendingState, () => null)
-  await update($, reviewBodyState, () => '')
 }
 
 /**
- * The review field changed: keeps the text, and in the pending review too, so what
- * the confirmation shows is what the confirm press posts. Enter in the field comes
- * here as well and posts nothing; only confirmPending writes.
+ * The review field changed: the text lives only in the pending review's body, written
+ * in one update, so the field, the confirmation and the press all read the same value.
+ * Enter in the field comes here as well and posts nothing; only confirmPending writes.
  */
 async function setReviewBody($: EngineInterface, text: string): Promise<void> {
-  const body = text.slice(0, MAX_REVIEW_CHARS)
-  await update($, reviewBodyState, () => body)
+  const body = clampReviewText(text)
   await update($, pendingState, (current: PendingAction | null) =>
     current !== null && (current.kind === 'approve' || current.kind === 'request-changes') ? { ...current, body } : current,
   )
@@ -310,25 +330,21 @@ async function selectMethod($: EngineInterface, method: MergeMethod): Promise<vo
  * so is one right after the confirmation (or its second step) was asked for. The write acts on
  * a fresh full fetch, never on the stored snapshot.
  */
-async function confirmPending($: EngineInterface, live: Live | null, isSecondStep: boolean): Promise<void> {
+async function confirmPending($: EngineInterface, live: Live | null, isSecondStep: boolean, drawnBody?: string): Promise<void> {
   if (confirmGuard.isBusy) return
   confirmGuard.isBusy = true
   try {
-    let pending = await read($, pendingState)
+    const pending = await read($, pendingState)
     if (pending === null) return
-    if (pending.kind === 'approve' || pending.kind === 'request-changes') {
-      // The text is taken from the field now, exactly as the confirmation shows it.
-      const body = await read($, reviewBodyState)
-      if (pending.body !== body) {
-        await update($, pendingState, (current: PendingAction | null) => (current !== null && current.kind === pending?.kind ? { ...current, body } : current))
-        pending = await read($, pendingState)
-        if (pending === null) return
-      }
-    }
     const step = confirmStep(pending, isSecondStep)
     if (step === 'ignore') return
     const pressedAt = await $.clock.now()
     if (isTooEarly(pending, pressedAt)) return
+    if ((pending.kind === 'approve' || pending.kind === 'request-changes') && pending.body !== drawnBody) {
+      // The press belongs to a drawing with other text than the live one: nothing is posted, the person looks again.
+      await update($, outcomeState, () => ({ kind: pending.kind, isOk: false, message: TEXT_CHANGED, at: new Date(pressedAt).toISOString() }))
+      return
+    }
     if (isReviewTextMissing(pending)) {
       // Refused before any call: the confirmation stays up with the reason.
       await update($, outcomeState, () => ({ kind: pending?.kind ?? 'request-changes', isOk: false, message: CHANGES_NEED_TEXT, at: new Date(pressedAt).toISOString() }))
@@ -343,20 +359,23 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
     const exec: Exec = (argv, init) => $.process.run(argv, init)
     // The pull request the confirmation is bound to: the pick's or the branch's, never another one.
     const stored = await pendingTarget($, pending)
-    const isPicked = (await read($, selectedState)) !== null
+    const branch = await read($, snapshotState)
+    const isBranchPr = branch.kind === 'pr' && isPick({ number: pending.prNumber, repo: pending.repo }, branch)
     const fail = async (message: string): Promise<void> => {
       await update($, outcomeState, () => ({ kind: pending.kind, isOk: false, message, at: new Date(pressedAt).toISOString() }))
     }
     if (stored === null) return await fail('no pull request to act on, review again')
     // The stored snapshot may be seconds old: re-read the pull request in full right before the write.
-    // With a pick set the branch's pull request may not be the one asked for, so the lookup goes by its number.
-    const fetched = isPicked ? await fetchPullRequestByNumber(exec, stored.location, pending.login, pending.prNumber) : await fetchPullRequest(exec, stored.location, pending.login)
+    // The branch's own pull request is looked up by its branch, any other one by its number.
+    const fetched = isBranchPr ? await fetchPullRequest(exec, stored.location, pending.login) : await fetchPullRequestByNumber(exec, stored.location, pending.login, pending.prNumber)
     if (fetched.kind !== 'ok' || fetched.pr === null) return await fail(RECHECK_FAILED)
     const freshPr = fetched.pr
     const latest: Snapshot = { kind: 'pr', at: new Date(await $.clock.now()).toISOString(), location: stored.location, account: stored.account, pr: freshPr }
-    // The fresh picture replaces the one the confirmation was asked on: the pick's own, else the branch's.
-    if (isPicked && (await read($, selectedSnapshotState)) !== null) await update($, selectedSnapshotState, () => latest)
-    else await update($, snapshotState, () => latest)
+    // The fresh picture goes to the slot it belongs to: the pick's when it is the picked pull request, the branch's when it is the branch's.
+    const picked = await read($, selectedState)
+    const isPicked = picked !== null && isPick(picked, latest)
+    if (isPicked) await update($, selectedSnapshotState, () => latest)
+    if (isBranchPr) await update($, snapshotState, () => latest)
     // The confirmation may have been cancelled or changed while we fetched: act on what is pending now, or not at all.
     const isSame = (current: PendingAction | null): boolean => current !== null && JSON.stringify(current) === JSON.stringify(pending)
     if (!isSame(await read($, pendingState))) return
@@ -379,13 +398,11 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
       if (outcome.isUnknown !== true) return
       // Timeout or unknown failure: the write may have gone through. Do not leave the confirmation armed.
       await update($, pendingState, () => null)
-      await update($, reviewBodyState, () => '')
       await $.ui.toast(`PR #${pending.prNumber}: result unknown, refreshed status`)
       if (live !== null) void live.run('command')
       return
     }
     await update($, pendingState, () => null)
-    await update($, reviewBodyState, () => '')
     // The action's own toast says it; the transition toast of the next refresh would say it twice.
     ownToast.prefix = transitionToastPrefix(pending.kind, pending.prNumber)
     ownToast.untilMs = pressedAt + OWN_TOAST_MS
@@ -396,6 +413,27 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
   }
 }
 
+/** The lowercase `owner/repo` of the repository the session's directory is in; null when it is in none. */
+async function currentRepo($: EngineInterface): Promise<string | null> {
+  const location = await readLocation((argv, init) => $.process.run(argv, init), await $.session.cwd())
+  return location === null ? null : (repoSlug(location)?.toLowerCase() ?? null)
+}
+
+/**
+ * After a change of repository the pick, its snapshot and any pending write belong to the one
+ * before: all three are dropped. `slug` is the lowercase `owner/repo` now, or null when there is none.
+ */
+async function dropIfRepoChanged($: EngineInterface, slug: string | null): Promise<void> {
+  const selected = await read($, selectedState)
+  const pending = await read($, pendingState)
+  const isChanged = (repo: string): boolean => repo !== (slug ?? '')
+  if (!(selected !== null && isChanged(selected.repo)) && !(pending !== null && isChanged(pending.repo))) return
+  await update($, selectedState, () => null)
+  await update($, selectedSnapshotState, () => null)
+  await update($, pendingState, () => null)
+  await update($, outcomeState, () => null)
+}
+
 /**
  * Shows another open pull request of the repository in the pane: sets the pick, drops
  * the confirmation and result of the one before, opens the pane with the keyboard and
@@ -404,10 +442,12 @@ async function confirmPending($: EngineInterface, live: Live | null, isSecondSte
 async function selectPr($: EngineInterface, live: Live | null, number: number): Promise<string> {
   if (!Number.isSafeInteger(number) || number < 1) return `${number} is not a pull request number.`
   if (confirmGuard.isBusy) return 'A confirmation is in progress, try again in a moment.'
-  await update($, selectedState, () => ({ number }))
+  // The pick belongs to the repository it was made in: a later change of repository drops it.
+  const repo = await currentRepo($)
+  if (repo === null) return 'No GitHub repository here.'
+  await update($, selectedState, () => ({ number, repo }))
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
-  await update($, reviewBodyState, () => '')
   await update($, outcomeState, () => null)
   const opened = await showPane($, true)
   if (live !== null) void live.run('command')
@@ -420,7 +460,6 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
   await update($, selectedState, () => null)
   await update($, selectedSnapshotState, () => null)
   await update($, pendingState, () => null)
-  await update($, reviewBodyState, () => '')
   await update($, outcomeState, () => null)
   if (live !== null) void live.run('command')
 }
@@ -522,7 +561,7 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
     requestChanges: () => void requestAction($, 'request-changes', subject),
     requestReady: () => void requestAction($, 'ready-for-review', subject),
     setReviewBody: text => void setReviewBody($, text),
-    confirmPending: isSecondStep => void confirmPending($, live, isSecondStep === true),
+    confirmPending: (isSecondStep, drawnBody) => void confirmPending($, live, isSecondStep === true, drawnBody),
     cancelPending: () => void cancelPending($),
     selectMethod: method => void selectMethod($, method),
     selectPr: number => void selectPr($, live, number),
@@ -543,10 +582,14 @@ export const register: Register = (on, options) => {
   let live: Live | null = null
 
   on('session.start', async ($, e, next) => {
+    // A second start (hot reload, resume) must not leave the first one's timers running next to its own.
+    cancelTimers()
+    generation += 1
+    const mine = generation
+    const isCurrent = (): boolean => mine === generation
     try {
       await update($, pendingState, () => null)
       await update($, outcomeState, () => null)
-      await update($, reviewBodyState, () => '')
     } catch {
       // a fresh session starts without a pending action either way
     }
@@ -645,9 +688,10 @@ export const register: Register = (on, options) => {
     const branchRefresher = createRefresher(depsFor('branch'))
     const selectedRefresher = createRefresher(depsFor('selected'))
 
-    let timer: Timer | null = null
     const arm = async (): Promise<void> => {
-      timer?.cancel()
+      timers.branch?.cancel()
+      timers.branch = null
+      if (!isCurrent()) return
       let delay = nextDelayMs({ kind: 'loading', at: '' }, null, config)
       try {
         const rateLimit = await read($, rateLimitState)
@@ -657,10 +701,18 @@ export const register: Register = (on, options) => {
       } catch {
         // keep the slow default
       }
-      timer = $.clock.after(delay, () => void run('timer'))
+      if (!isCurrent()) return
+      timers.branch = $.clock.after(delay, () => void run('timer'))
     }
     const run = async (reason: RefreshReason): Promise<void> => {
       await Promise.all([branchRefresher.refresh(reason), selectedRefresher.refresh(reason)])
+      // A pick or pending write made in another repository does not follow the session into this one.
+      try {
+        const slug = snapshotSlug(await read($, snapshotState))
+        if (isCurrent() && slug !== null) await dropIfRepoChanged($, slug)
+      } catch {
+        // the state is gone with the session; arm() copes the same way
+      }
       await arm()
     }
 
@@ -680,11 +732,12 @@ export const register: Register = (on, options) => {
 
     let isListPolling = false
     let listFlight: Promise<void> | null = null
-    let listTimer: Timer | null = null
     const stopList = (): void => {
       isListPolling = false
-      listTimer?.cancel()
-      listTimer = null
+      if (isCurrent()) {
+        timers.list?.cancel()
+        timers.list = null
+      }
     }
     const readListOnce = async (): Promise<void> => {
       const target = await repoTarget()
@@ -715,11 +768,13 @@ export const register: Register = (on, options) => {
         } finally {
           listFlight = null
         }
-        listTimer?.cancel()
-        listTimer = null
+        if (!isCurrent()) return
+        timers.list?.cancel()
+        timers.list = null
         if (!isListPolling) return
-        const delay = listDelayMs(await read($, listState))
-        listTimer = $.clock.after(delay, () => void tickList())
+        // A low rate limit slows the poll down to every five minutes at most.
+        const delay = listDelayMs(await read($, listState), await read($, rateLimitState))
+        timers.list = $.clock.after(delay, () => void tickList())
       })()
       listFlight = flight
       return flight
@@ -730,7 +785,6 @@ export const register: Register = (on, options) => {
     }
 
     let countsFlight: Promise<void> | null = null
-    let countsTimer: Timer | null = null
     const runCounts = (): Promise<void> => {
       if (countsFlight !== null) return countsFlight
       const flight = (async (): Promise<void> => {
@@ -755,8 +809,15 @@ export const register: Register = (on, options) => {
         } finally {
           countsFlight = null
         }
-        countsTimer?.cancel()
-        countsTimer = $.clock.after(delay, () => void runCounts())
+        if (!isCurrent()) return
+        timers.counts?.cancel()
+        let rateLimit: RateLimit | null = null
+        try {
+          rateLimit = await read($, rateLimitState)
+        } catch {
+          // without it the plain delay stands
+        }
+        timers.counts = $.clock.after(pollDelayMs(delay, rateLimit), () => void runCounts())
       })()
       countsFlight = flight
       return flight
@@ -767,6 +828,9 @@ export const register: Register = (on, options) => {
       runList,
       stopList,
       cwdChanged: async () => {
+        // The directory may be in another repository now: what was picked or pending in the old one goes first.
+        const location = await readLocation(exec, await $.session.cwd())
+        await dropIfRepoChanged($, location === null ? null : (repoSlug(location)?.toLowerCase() ?? null))
         await run('cwd')
         await runCounts()
         if (isListPolling) await runList()
@@ -885,7 +949,6 @@ export const register: Register = (on, options) => {
   // the picked pull request is no longer polled once nobody looks at it.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     await update($, pendingState, () => null)
-    await update($, reviewBodyState, () => '')
     await update($, selectedState, () => null)
     await update($, selectedSnapshotState, () => null)
     return next(e)
