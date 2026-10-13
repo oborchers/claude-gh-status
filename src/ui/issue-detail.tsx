@@ -82,12 +82,11 @@ export function renderIssueDetail(table: UiTable, view: IssueDetailView, handler
 
   const { issue } = snapshot
   const lead = (
-    <>
+    <Box marginRight={1}>
       <Text color={palette.badgeText} backgroundColor={stateBackground(palette, issue)} bold>
         {` ${issue.state} `}
       </Text>
-      <Text> </Text>
-    </>
+    </Box>
   )
   const header: RenderElement[] = [
     detailHeader(table, columns, lead, cellWidth(issue.state) + 3, `issue-${issue.number}`, `#${issue.number} ${issue.title}`, handlers),

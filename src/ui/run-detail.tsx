@@ -2,14 +2,14 @@
 
 import type { RenderElement } from 'claude-code'
 
-import type { CheckState, RunItem } from '../model'
+import type { CheckState, JobDetail, RunItem } from '../model'
 import { checkGlyph, formatDuration, relativeTime, shortSha } from '../status'
 import { tone } from './colors'
 import type { Tone } from './colors'
 import type { RepoHandlers, RunDetailView, UiTable } from './contract'
 import { detailHeader, messageView, sectionHeading, staleRows } from './detail'
 import { retryText, truncate } from './format'
-import { jobLines } from './pane'
+import { jobLines, stateRank } from './pane'
 
 const FAILED_RUN_STATES: readonly CheckState[] = ['failure', 'timed-out']
 
@@ -38,6 +38,11 @@ function timingLine(run: RunItem, nowMs: number): string {
   return `started ${relativeTime(run.startedAt, nowMs)}${duration}`
 }
 
+/** Jobs in the order the PR pipeline lists checks: failed first, jobs that did not run last, else as GitHub lists them. */
+function sortJobs(jobs: JobDetail[]): JobDetail[] {
+  return jobs.map((job, index) => ({ job, index })).sort((a, b) => stateRank(a.job.state) - stateRank(b.job.state) || a.index - b.index).map(({ job }) => job)
+}
+
 /** The run detail body for a view. */
 export function renderRunDetail(table: UiTable, view: RunDetailView, handlers: RepoHandlers): RenderElement {
   const { Box, Button, Text } = table
@@ -63,7 +68,7 @@ export function renderRunDetail(table: UiTable, view: RunDetailView, handlers: R
   ]
 
   const sections: RenderElement[] = [<Box flexDirection="column">{header}</Box>]
-  const jobRows = jobs.length === 0 ? [<Text dimColor>no jobs reported</Text>] : jobLines(table, jobs, palette, columns, (url) => handlers.openUrl(url), 'job')
+  const jobRows = jobs.length === 0 ? [<Text dimColor>no jobs reported</Text>] : jobLines(table, sortJobs(jobs), palette, columns, (url) => handlers.openUrl(url), 'job')
   sections.push(
     <Box flexDirection="column">
       {sectionHeading(table, 'Jobs', columns)}

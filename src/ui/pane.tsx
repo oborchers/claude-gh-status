@@ -36,8 +36,9 @@ function checkColor(state: CheckState): Tone | undefined {
   }
 }
 
-function checkRank(check: Check): number {
-  switch (check.state) {
+/** Failed first, then running, queued, passed, and checks that did not run last. */
+export function stateRank(state: CheckState): number {
+  switch (state) {
     case 'failure':
     case 'timed-out':
     case 'action-required':
@@ -54,6 +55,8 @@ function checkRank(check: Check): number {
       return 3
   }
 }
+
+const checkRank = (check: Check): number => stateRank(check.state)
 
 /** Required checks first, then failed, running, queued, the rest; stale checks are left out. */
 export function sortChecks(checks: Check[]): Check[] {
