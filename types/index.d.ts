@@ -165,6 +165,8 @@ export type PullRequest = {
   threads: ReviewThread[];
   commentCount: number;
   lastComment: CommentRef | null;
+  /** Issues the pull request closes when merged (`closingIssuesReferences`); absent before 0.3.0 data. */
+  linkedIssues?: { number: number; title: string; state: 'open' | 'closed' }[];
 };
 
 /**
