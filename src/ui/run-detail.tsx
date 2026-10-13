@@ -59,7 +59,7 @@ export function renderRunDetail(table: UiTable, view: RunDetailView, handlers: R
   const facts = [run.branch, run.event, run.actor === null ? null : `@${run.actor}`, shortSha(run.headSha)].filter((part): part is string => part !== null && part !== '')
   const attempt = run.attempt > 1 ? ` · attempt ${run.attempt}` : ''
   const header: RenderElement[] = [
-    detailHeader(table, columns, lead, 2, `run-${run.id}`, `#${run.runNumber} ${run.name}`, handlers),
+    detailHeader(table, columns, lead, 2, `run-${run.id}`, `#${run.runNumber} ${run.name}`, handlers, view.focusedKey ?? null),
     <Text wrap="truncate-end">{truncate(`${facts.join(' · ')}${attempt}`, columns)}</Text>,
     <Text dimColor wrap="truncate-end">
       {truncate(timingLine(run, nowMs), columns)}

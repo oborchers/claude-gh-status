@@ -11,6 +11,7 @@ import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
 import type { Palette, Tone } from './colors'
 import type { Handlers, UiTable, View } from './contract'
+import { titleButton } from './detail'
 
 type Pr = Extract<Snapshot, { kind: 'pr' }>
 const MAX_CHECK_ROWS = 40
@@ -544,9 +545,15 @@ function navWidth(view: View, handlers: Handlers): number {
  * refreshes. It keeps the key of the row that opened it, so a desktop pane that drops
  * the focus when the pressed Button is gone from the next drawing keeps it here.
  */
-function selectedTitle(table: UiTable, handlers: Handlers, number: number, title: string): RenderElement {
-  const { Button } = table
-  return <Button key={`pr-${number}`} plain label={title} onPress={() => handlers.refresh()} />
+function selectedTitle(table: UiTable, view: View, handlers: Handlers, number: number, title: string): RenderElement {
+  const key = `pr-${number}`
+  return titleButton(table, key, title, view.focusedKey === key, () => handlers.refresh())
+}
+
+/** The branch pull request's title: on the terminal the `pr-anchor` Button drawn calm, on the desktop the Link. */
+function branchTitle(table: UiTable, view: View, handlers: Handlers, href: string, title: string): RenderElement {
+  if (view.surface === 'desktop') return prAnchor(table, view, handlers, href, title)
+  return titleButton(table, 'pr-anchor', title, view.focusedKey === 'pr-anchor', () => handlers.openOnGitHub())
 }
 
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
@@ -564,7 +571,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
         </Text>
         <Text> </Text>
       </Box>
-      <Box flexShrink={0}>{view.isSelected === true ? selectedTitle(table, handlers, pr.number, title) : prAnchor(table, view, handlers, pr.url, title)}</Box>
+      {view.isSelected === true ? selectedTitle(table, view, handlers, pr.number, title) : branchTitle(table, view, handlers, pr.url, title)}
       {navButtons(table, view, handlers, LIST_GAP)}
     </Box>,
     <Text wrap="truncate-end">

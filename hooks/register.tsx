@@ -132,6 +132,7 @@ const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } 
 const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
 const paneViewState = atom({ plugin: 'gh-status', key: 'paneView' } as const, 'detail')
 const paneFocusState = atom({ plugin: 'gh-status', key: 'paneFocus' } as const, null)
+const paneRingState = atom({ plugin: 'gh-status', key: 'paneRing' } as const, null)
 const FRESH_TAB: TabState = { level: 'list', page: 0, focus: null, selected: null }
 const paneTabState = atom({ plugin: 'gh-status', key: 'paneTab' } as const, 'prs')
 const issuesTabState = atom({ plugin: 'gh-status', key: 'issuesTab' } as const, FRESH_TAB)
@@ -265,7 +266,7 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
   const counts = await read($, countsState)
   const mainStatus = settings.isMainShown ? await read($, mainStatusState) : null
-  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus }
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus, ...(subject === 'pane' ? { focusedKey: await read($, paneRingState) } : {}) }
 }
 
 async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette, bodyRows?: number): Promise<ListView> {
@@ -293,12 +294,23 @@ async function readTabsView($: EngineInterface, palette: Palette): Promise<TabsV
   const main = settings.isMainShown ? await read($, mainStatusState) : null
   return {
     tab: await read($, paneTabState),
+    focusedKey: await read($, paneRingState),
     prCount: counts !== null ? counts.open : list !== null && list.kind === 'list' ? list.total : null,
     issueCount: counts?.issues ?? null,
     mainWorst: main === null ? null : main.worst,
     isLocked: (await read($, pendingState)) !== null,
     palette,
   }
+}
+
+/**
+ * The row key that shows the marker: the ring's while it is on a row of this list (the
+ * ring on a footer button or the tab row takes the marker away), else the remembered row
+ * while the ring is not known.
+ */
+function rowMarker(ring: string | null, remembered: string | null, prefix: string): string | null {
+  if (ring === null) return remembered
+  return ring.startsWith(prefix) ? ring : null
 }
 
 /** The number an issue snapshot is about. */
@@ -311,6 +323,7 @@ const runIdOf = (snapshot: RunSnapshot): number => (snapshot.kind === 'run' ? sn
 async function readTabBody($: EngineInterface, table: UiTable, columns: number, surface: 'terminal' | 'desktop', palette: Palette, live: Live | null, bodyRows?: number): Promise<RenderElement> {
   const tab = await read($, paneTabState)
   const nowMs = await $.clock.now()
+  const ring = await read($, paneRingState)
   if (tab === 'prs') {
     if ((await read($, paneViewState)) === 'list') {
       const listView = await readListView($, columns, surface, palette, bodyRows)
@@ -327,24 +340,24 @@ async function readTabBody($: EngineInterface, table: UiTable, columns: number, 
       const branch = await read($, snapshotState)
       const viewer = issues !== null && issues.kind === 'list' ? issues.account.login : 'account' in branch ? branch.account.login : ''
       const fit = fitTab('issues', state.page, bodyRows, (first, rows) => issuePageSize(issues, first, rows))
-      const view: IssuesView = { issues, page: fit.page, pageSize: fit.pageSize, focusedKey: state.focus, viewer, nowMs, columns, surface, palette }
+      const view: IssuesView = { issues, page: fit.page, pageSize: fit.pageSize, focusedKey: rowMarker(ring, state.focus, 'issue-'), viewer, nowMs, columns, surface, palette }
       return renderIssues(table, view, handlers)
     }
     const stored = await read($, issueSnapshotState)
     const snapshot: IssueSnapshot = stored !== null && issueNumberOf(stored) === state.selected ? stored : { kind: 'loading', at: '', number: state.selected }
-    const view: IssueDetailView = { snapshot, nowMs, columns, surface, palette }
+    const view: IssueDetailView = { snapshot, focusedKey: ring, nowMs, columns, surface, palette }
     return renderIssueDetail(table, view, handlers)
   }
   const state = await read($, actionsTabState)
   if (state.level === 'list' || state.selected === null) {
     const runs = await read($, runsState)
     const fit = fitTab('actions', state.page, bodyRows, (first, rows) => runPageSize(runs, first, rows))
-    const view: RunsView = { runs, page: fit.page, pageSize: fit.pageSize, focusedKey: state.focus, nowMs, columns, surface, palette }
+    const view: RunsView = { runs, page: fit.page, pageSize: fit.pageSize, focusedKey: rowMarker(ring, state.focus, 'run-'), nowMs, columns, surface, palette }
     return renderRuns(table, view, handlers)
   }
   const stored = await read($, runSnapshotState)
   const snapshot: RunSnapshot = stored !== null && runIdOf(stored) === state.selected ? stored : { kind: 'loading', at: '', runId: state.selected }
-  const view: RunDetailView = { snapshot, outcome: null, nowMs, columns, surface, palette }
+  const view: RunDetailView = { snapshot, focusedKey: ring, outcome: null, nowMs, columns, surface, palette }
   return renderRunDetail(table, view, handlers)
 }
 
@@ -633,7 +646,10 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
   const selected = await read($, selectedState)
   await leaveSelection($)
   const key = selected === null ? null : `pr-${selected.number}`
-  if (key !== null) await update($, paneFocusState, () => key)
+  if (key !== null) {
+    await update($, paneFocusState, () => key)
+    await update($, paneRingState, () => key)
+  }
   await showList($, live, false)
   if (key === null) return
   try {
@@ -709,20 +725,26 @@ async function tabViewRows($: EngineInterface, tab: 'issues' | 'actions'): Promi
 }
 
 /**
- * Puts the focus ring where the tab was left: the remembered row in a list, the tab's own
- * button in a detail. A request: where the engine refuses it (no keyboard, or `claude plugin
+ * Puts the focus ring where the tab was left: the remembered row in a list, the header
+ * title in a detail (the key the list row shares, `pr-<n>` for a picked pull request, the
+ * branch pull request's `pr-anchor`). A request: where the engine refuses it (no keyboard, or `claude plugin
  * test`) the ring stays where it is.
  */
 async function restoreFocus($: EngineInterface, tab: PaneTab): Promise<void> {
   let key: string | null
   if (tab === 'prs') {
     const focus = await read($, paneFocusState)
-    key = (await read($, paneViewState)) === 'list' ? (focus !== null && focus.startsWith('pr-') ? focus : null) : 'tab-prs'
+    const picked = await read($, selectedState)
+    if ((await read($, paneViewState)) === 'list') key = focus !== null && focus.startsWith('pr-') ? focus : null
+    else key = picked === null ? 'pr-anchor' : `pr-${picked.number}`
   } else {
     const state = await readTabState($, tab)
-    key = state.level === 'list' ? state.focus : `tab-${tab}`
+    if (state.level === 'list') key = state.focus
+    else if (state.selected === null) key = null
+    else key = `${tab === 'issues' ? 'issue' : 'run'}-${state.selected}`
   }
   if (key === null) return
+  await update($, paneRingState, () => key)
   try {
     await $.ui.focus({ requestId: PANE_ID, key })
   } catch {
@@ -1557,6 +1579,7 @@ export const register: Register = (on, options) => {
   on('ui.focus', async ($, e, next) => {
     if (e.requestId === PANE_ID) {
       const key = e.element ?? null
+      await update($, paneRingState, () => key)
       const tab = await read($, paneTabState)
       if (tab === 'prs') {
         await update($, paneFocusState, () => key)
