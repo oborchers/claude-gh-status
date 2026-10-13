@@ -341,7 +341,8 @@ async function showPane($: EngineInterface, isFocused: boolean): Promise<UiOpenR
 }
 
 async function openPane($: EngineInterface, live: Live | null): Promise<string> {
-  const opened = await showPane($, false)
+  // With the keyboard, so 1, 2, 3 and the row keys work at once; Esc gives it back to the prompt.
+  const opened = await showPane($, true)
   if (live !== null) void live.run('command')
   return opened.isPlaced ? 'PR pane opened.' : `PR pane opened but not drawn yet: ${opened.reason}`
 }
