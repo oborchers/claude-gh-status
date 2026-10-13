@@ -1802,6 +1802,22 @@ describe('the pane: linked issues and workflow runs', () => {
     }
   })
 
+  test('a linked issue of another repository is dim text with its slug, never a button', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const issues = [
+      { number: 7, title: 'Here', state: 'open' as const, repo: 'ACME/app' },
+      { number: 9, title: 'There', state: 'open' as const, repo: 'evil/fork' },
+    ]
+    const ui = await rig.pane($, 'terminal', prView({ linkedIssues: issues }, 80), handlersFor(calls, { openLinkedIssue: (n) => void calls.push(`issue ${n}`) }))
+    const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('linked-issue-'))
+    expect(keys).toEqual(['linked-issue-7'])
+    const text = await textOf(ui)
+    expect(text).toContain('evil/fork#9 There')
+    expect(text).toContain('#7 Here')
+    expect(text).not.toContain('ACME/app#7')
+  })
+
   test('draws no section without linked issues, and no button without the handler', async ($, on) => {
     const rig = createRig(on)
     const none = await rig.pane($, 'terminal', prView({ linkedIssues: [] }, 80), full())

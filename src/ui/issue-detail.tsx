@@ -9,7 +9,7 @@ import { badgeBackground, mutedLabelColor, tone } from './colors'
 import type { Palette } from './colors'
 import type { IssueDetailView, RepoHandlers, UiTable } from './contract'
 import { detailHeader, messageView, sectionHeading, staleRows } from './detail'
-import { cellWidth, retryText, truncate } from './format'
+import { cellWidth, isForeignRepo, retryText, truncate } from './format'
 
 /** Lines of the description before it is cut. */
 export const MAX_BODY_LINES = 40
@@ -29,8 +29,9 @@ function stateBackground(palette: Palette, issue: Issue): string {
   return badgeBackground(palette, issue.stateReason === 'not-planned' ? 'draft' : 'merged')
 }
 
-function linkedPrLabel(pr: LinkedPr, columns: number): string {
-  return truncate(`#${pr.number} ${pr.title}${pr.state === 'open' ? '' : ` (${pr.state})`}`, columns)
+function linkedPrLabel(pr: LinkedPr, columns: number, isForeign: boolean): string {
+  const state = pr.state === 'open' ? '' : ` (${pr.state})`
+  return truncate(`${isForeign && pr.repo !== undefined ? pr.repo : ''}#${pr.number} ${pr.title}${state}`, columns)
 }
 
 function commentRows(table: UiTable, view: IssueDetailView, issue: Issue): RenderElement[] {
@@ -124,13 +125,19 @@ export function renderIssueDetail(table: UiTable, view: IssueDetailView, handler
     sections.push(
       <Box flexDirection="column">
         {sectionHeading(table, 'Linked pull requests', columns)}
-        {issue.linkedPrs.map((pr) => (
-          <Button key={`linked-pr-${pr.number}`} plain onPress={() => handlers.openLinkedPr(pr.number)}>
-            <Text color={tone(palette, pr.state === 'merged' ? 'merged' : undefined)} dimColor={pr.state === 'closed' ? true : undefined}>
-              {linkedPrLabel(pr, columns)}
+        {issue.linkedPrs.map((pr) =>
+          isForeignRepo(pr.repo, snapshot.location) ? (
+            <Text key={`linked-pr-${pr.repo}-${pr.number}`} dimColor wrap="truncate-end">
+              {linkedPrLabel(pr, columns, true)}
             </Text>
-          </Button>
-        ))}
+          ) : (
+            <Button key={`linked-pr-${pr.number}`} plain onPress={() => handlers.openLinkedPr(pr.number)}>
+              <Text color={tone(palette, pr.state === 'merged' ? 'merged' : undefined)} dimColor={pr.state === 'closed' ? true : undefined}>
+                {linkedPrLabel(pr, columns, false)}
+              </Text>
+            </Button>
+          ),
+        )}
       </Box>,
     )
   }

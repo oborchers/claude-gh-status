@@ -11,6 +11,7 @@ import { runGh, tokenFor } from './gh'
 import type { Exec, GhResult } from './gh'
 import type { ActionOutcome, Blocker, CheckState, JobDetail, MergeMethod, PendingAction, PullRequest, RepoLocation, Snapshot } from './model'
 import { FAILED_STATES, deriveBlockers, deriveStatus } from './status'
+import { SLUG_PATTERN } from './text'
 
 export type PrSnapshot = Extract<Snapshot, { kind: 'pr' }>
 export type ActionKind = PendingAction['kind']
@@ -50,7 +51,6 @@ export const READY_MUTATION =
   'mutation($pullRequestId: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { number } } }'
 
 const OID_PATTERN = /^[0-9a-f]{40}$/
-const SLUG_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
 /** True for a full 40-digit lowercase hex git object id. */
 export const isValidOid = (oid: string): boolean => OID_PATTERN.test(oid)
@@ -182,6 +182,11 @@ export function availableActions(pr: PullRequest, viewerLogin = ''): ActionKind[
 
 /** States of a check whose job `gh run rerun --failed` re-runs. action-required is left out: it waits for an approval, a re-run does not help. */
 const RERUNNABLE_STATES: readonly CheckState[] = ['failure', 'timed-out', 'cancelled']
+
+/** Whether the Actions run detail may re-run a run in this state: only a failed or timed-out one. */
+export function canRerunRun(state: CheckState): boolean {
+  return state === 'failure' || state === 'timed-out'
+}
 
 /**
  * Distinct Actions run ids worth re-running: a check of the run failed, timed out

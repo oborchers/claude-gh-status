@@ -14,6 +14,7 @@ import { fetchJobs } from './jobs'
 import { PAGE_SIZE, pollDelayMs } from './list'
 import type { AccountChoice, JobDetail, MainStatus, Problem, RateLimit, RepoLocation, RunGroup, RunItem, RunList, RunSnapshot } from './model'
 import { checkStateFrom } from './query'
+import { cleanStr } from './text'
 import { backoffMs, isTransient, reasonOf } from './scheduler'
 
 /** Runs read for the default branch and for this branch. */
@@ -92,7 +93,7 @@ export function normalizeRun(raw: unknown): RunItem | null {
   const run = asObj(raw)
   const id = asNum(run?.id)
   const workflowId = asNum(run?.workflow_id)
-  const name = asStr(run?.name)
+  const name = cleanStr(run?.name)
   const createdAt = asStr(run?.created_at)
   if (run === null || id === null || workflowId === null || name === null || createdAt === null) return null
   return {
@@ -100,9 +101,9 @@ export function normalizeRun(raw: unknown): RunItem | null {
     runNumber: asNum(run.run_number) ?? 0,
     workflowId,
     name,
-    branch: asStr(run.head_branch),
+    branch: cleanStr(run.head_branch),
     event: asStr(run.event) ?? '',
-    actor: asStr(asObj(run.actor)?.login),
+    actor: cleanStr(asObj(run.actor)?.login),
     state: checkStateFrom(run.status, run.conclusion),
     headSha: asStr(run.head_sha) ?? '',
     createdAt,

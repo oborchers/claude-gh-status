@@ -476,7 +476,7 @@ describe('linked issues', () => {
   }
 
   test('the detail query asks for the first 5 closing issues', () => {
-    expect(PR_DETAIL_QUERY).toContain('closingIssuesReferences(first: 5) { nodes { number title state } }')
+    expect(PR_DETAIL_QUERY).toContain('closingIssuesReferences(first: 5) { nodes { number title state repository { nameWithOwner } } }')
   })
 
   test('fills linkedIssues with the state lowercased', () => {

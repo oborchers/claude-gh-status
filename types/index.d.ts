@@ -166,7 +166,7 @@ export type PullRequest = {
   commentCount: number;
   lastComment: CommentRef | null;
   /** Issues the pull request closes when merged (`closingIssuesReferences`); absent before 0.3.0 data. */
-  linkedIssues?: { number: number; title: string; state: 'open' | 'closed' }[];
+  linkedIssues?: { number: number; title: string; state: 'open' | 'closed'; repo?: string }[];
 };
 
 /**
@@ -400,7 +400,13 @@ export type IssueComment = {
 };
 
 /** A pull request that closes an issue. */
-export type LinkedPr = { number: number; title: string; state: 'open' | 'closed' | 'merged' };
+export type LinkedPr = {
+  number: number;
+  title: string;
+  state: 'open' | 'closed' | 'merged';
+  /** `owner/name` of the repository the pull request is in; absent in older data. */
+  repo?: string;
+};
 
 /** One issue with what its detail view shows. */
 export type Issue = {

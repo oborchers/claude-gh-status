@@ -1,7 +1,7 @@
 // Pure text helpers for the band and pane: cell widths, truncation, fitting
 // segments into a line, and the one-line explanation of a snapshot with no PR.
 
-import type { Problem, PullRequest, Snapshot, Status } from '../model'
+import type { Problem, PullRequest, RepoLocation, Snapshot, Status } from '../model'
 import { prBadge } from '../status'
 
 /** Terminal cells one code point takes: 0 for marks and joiners, 2 for wide glyphs and emoji. */
@@ -164,4 +164,10 @@ export function repeatsBadge(pr: PullRequest, status: Status): boolean {
   if (status.verdict === 'in-queue') return badge === 'queued' && pr.mergeQueueEntry === null
   if (status.verdict === 'blocked') return badge === 'draft' && status.blockers.length > 0 && status.blockers.every((blocker) => blocker.kind === 'draft')
   return false
+}
+
+/** True when a linked item's `owner/name` differs (case-insensitive) from the repository shown; unknown counts as the same. */
+export function isForeignRepo(repo: string | undefined, location: RepoLocation): boolean {
+  if (repo === undefined || location.owner === null || location.repo === null) return false
+  return repo.toLowerCase() !== `${location.owner}/${location.repo}`.toLowerCase()
 }

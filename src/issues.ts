@@ -8,6 +8,7 @@ import type { Exec } from './gh'
 import { LIST_LIMIT, PAGE_SIZE, ask, asNum, asObj, asStr, failed, nodesOf, toRateLimit } from './list'
 import type { Failure } from './list'
 import type { AccountChoice, Issue, IssueComment, IssueGroup, IssueItem, IssueList, IssueSnapshot, LinkedPr, Problem, RateLimit, RepoLocation } from './model'
+import { SLUG_PATTERN, cleanStr } from './text'
 import { backoffMs, isTransient, reasonOf } from './scheduler'
 
 /** Group order, as drawn. */
@@ -24,7 +25,7 @@ export const ISSUE_LIST_QUERY = `query($q: String!) {
         labels(first: 10) { nodes { name color } }
         assignees(first: 5) { nodes { login } }
         comments { totalCount }
-        closedByPullRequestsReferences(first: 3) { nodes { number } }
+        closedByPullRequestsReferences(first: 3) { nodes { number repository { nameWithOwner } } }
       }
     }
   }
@@ -53,7 +54,7 @@ export const ISSUE_DETAIL_QUERY = `query($owner: String!, $name: String!, $n: In
         totalCount
         nodes { author { login __typename } createdAt lastEditedAt body url }
       }
-      closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number title state } }
+      closedByPullRequestsReferences(first: 5, includeClosedPrs: true) { nodes { number title state repository { nameWithOwner } } }
     }
   }
   rateLimit { cost remaining resetAt }
@@ -89,7 +90,7 @@ export type FetchedIssue =
 function labelsOf(node: unknown): { name: string; color: string }[] {
   const labels: { name: string; color: string }[] = []
   for (const label of nodesOf(node)) {
-    const name = asStr(label.name)
+    const name = cleanStr(label.name)
     if (name !== null) labels.push({ name, color: asStr(label.color) ?? '' })
   }
   return labels
@@ -98,27 +99,37 @@ function labelsOf(node: unknown): { name: string; color: string }[] {
 function loginsOf(node: unknown): string[] {
   const logins: string[] = []
   for (const user of nodesOf(node)) {
-    const login = asStr(user.login)
+    const login = cleanStr(user.login)
     if (login !== null) logins.push(login)
   }
   return logins
 }
 
-function toItem(node: Record<string, unknown>, mentioned: ReadonlySet<number>): IssueItem | null {
+/** `owner/name` of a node's repository; null when absent or not a plain slug. */
+function repoOf(node: Record<string, unknown>): string | null {
+  const slug = asStr(asObj(node.repository)?.nameWithOwner)
+  return slug !== null && SLUG_PATTERN.test(slug) ? slug : null
+}
+
+function toItem(node: Record<string, unknown>, mentioned: ReadonlySet<number>, current: string | null): IssueItem | null {
   const id = asStr(node.id)
   const number = asNum(node.number)
   if (id === null || number === null) return null
   const linkedPrs: number[] = []
   for (const pr of nodesOf(node.closedByPullRequestsReferences)) {
     const linked = asNum(pr.number)
-    if (linked !== null) linkedPrs.push(linked)
+    const repo = repoOf(pr)
+    if (linked === null) continue
+    // A pull request of another repository is not this issue's fix here.
+    if (current !== null && repo !== null && repo.toLowerCase() !== current.toLowerCase()) continue
+    linkedPrs.push(linked)
   }
   return {
     id,
     number,
-    title: asStr(node.title) ?? '',
+    title: cleanStr(node.title) ?? '',
     url: asStr(node.url) ?? '',
-    author: asStr(asObj(node.author)?.login),
+    author: cleanStr(asObj(node.author)?.login),
     createdAt: asStr(node.createdAt) ?? '',
     labels: labelsOf(node.labels),
     assignees: loginsOf(node.assignees),
@@ -130,13 +141,15 @@ function toItem(node: Record<string, unknown>, mentioned: ReadonlySet<number>): 
 
 /**
  * Turns ISSUE_LIST_QUERY's answer into list items. `mentionedNumbers` comes from
- * MENTIONED_QUERY. Pure; never throws; malformed issues are dropped.
+ * MENTIONED_QUERY. `repository` is the one listed (`owner/name`): linked pull
+ * requests of any other repository are not counted. Pure; never throws;
+ * malformed issues are dropped.
  */
-export function normalizeIssues(raw: unknown, mentionedNumbers: ReadonlySet<number>): NormalizedIssues {
+export function normalizeIssues(raw: unknown, mentionedNumbers: ReadonlySet<number>, repository: string | null = null): NormalizedIssues {
   const search = asObj(asObj(asObj(raw)?.data)?.search)
   const items: IssueItem[] = []
   for (const node of nodesOf(search)) {
-    const item = toItem(node, mentionedNumbers)
+    const item = toItem(node, mentionedNumbers, repository)
     if (item !== null) items.push(item)
   }
   const total = Math.max(asNum(search?.issueCount) ?? 0, items.length)
@@ -242,7 +255,7 @@ export async function fetchIssues(exec: Exec, location: RepoLocation, login: str
   ])
   if ('failure' in listed) return { kind: 'error', failure: listed.failure }
   if ('failure' in mentionedAsked) return { kind: 'error', failure: mentionedAsked.failure }
-  const normalized = normalizeIssues(listed.answer, mentionedNumbersOf(mentionedAsked.answer))
+  const normalized = normalizeIssues(listed.answer, mentionedNumbersOf(mentionedAsked.answer), `${location.owner}/${location.repo}`)
   return { kind: 'ok', ...normalized, rateLimit: toRateLimit(asObj(asObj(listed.answer)?.data)?.rateLimit) }
 }
 
@@ -279,13 +292,13 @@ const LINKED_STATES: Record<string, LinkedPr['state']> = { open: 'open', closed:
 
 function toComment(node: Record<string, unknown>): IssueComment {
   const author = asObj(node.author)
-  const login = asStr(author?.login) ?? 'ghost'
+  const login = cleanStr(author?.login) ?? 'ghost'
   return {
     author: login,
     isBot: author?.__typename === 'Bot' || login.endsWith('[bot]'),
     createdAt: asStr(node.createdAt) ?? '',
     editedAt: asStr(node.lastEditedAt),
-    body: asStr(node.body) ?? '',
+    body: cleanStr(node.body) ?? '',
     url: asStr(node.url) ?? '',
   }
 }
@@ -305,23 +318,29 @@ export function normalizeIssue(raw: unknown): Issue | null {
   for (const pr of nodesOf(node.closedByPullRequestsReferences)) {
     const linked = asNum(pr.number)
     if (linked === null) continue
-    linkedPrs.push({ number: linked, title: asStr(pr.title) ?? '', state: LINKED_STATES[lowered(pr.state) ?? ''] ?? 'open' })
+    const repo = repoOf(pr)
+    linkedPrs.push({
+      number: linked,
+      title: cleanStr(pr.title) ?? '',
+      state: LINKED_STATES[lowered(pr.state) ?? ''] ?? 'open',
+      ...(repo === null ? {} : { repo }),
+    })
   }
   const comments = asObj(node.comments)
   const loaded = nodesOf(comments).map(toComment)
   return {
     id,
     number,
-    title: asStr(node.title) ?? '',
+    title: cleanStr(node.title) ?? '',
     url: asStr(node.url) ?? '',
     state: lowered(node.state) === 'closed' ? 'closed' : 'open',
     stateReason: lowered(node.stateReason),
-    author: asStr(asObj(node.author)?.login),
+    author: cleanStr(asObj(node.author)?.login),
     createdAt: asStr(node.createdAt) ?? '',
     labels: labelsOf(node.labels),
     assignees: loginsOf(node.assignees),
-    milestone: asStr(asObj(node.milestone)?.title),
-    body: asStr(node.body) ?? '',
+    milestone: cleanStr(asObj(node.milestone)?.title),
+    body: cleanStr(node.body) ?? '',
     linkedPrs,
     comments: loaded,
     commentCount: Math.max(asNum(comments?.totalCount) ?? 0, loaded.length),
