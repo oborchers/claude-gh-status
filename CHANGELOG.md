@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-13
+
+### Changed
+
+- The detail of a pull request, an issue or a run shows the number in the header line and the full title on its own line below it, wrapped instead of cut.
+
 ## [0.3.0] - 2026-10-13
 
 ### Added
@@ -123,6 +129,7 @@ First release.
 - Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
 - Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments by creation or edit time is shown, so a review bot that updates an older comment in place surfaces. Edits within 60 seconds of creation (automatic post-processing by bots) do not count. The fast check watches `pulls/{n}/comments` too; edits are seen within the first 100 comments of a list.
 
+[0.3.1]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.3.1
 [0.3.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.3.0
 [0.2.1]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.2.1
 [0.2.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.2.0
