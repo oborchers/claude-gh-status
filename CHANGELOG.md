@@ -5,6 +5,35 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-13
+
+### Added
+
+- Issues tab: the repository's open issues, grouped as Assigned to you, Opened by you, Mentioning you, Other open, two lines each. The detail shows labels, assignees, milestone, linked pull requests, the description as Markdown (cut, with `o` for the rest) and the latest comments. Read only.
+- Actions tab: workflow runs grouped as the default branch (newest run per workflow), This branch and Recent. The run detail shows the jobs with the running or failed step. `t` re-runs the failed jobs of that run (no confirmation) and `f` puts a reference to the failure into the prompt, never the log.
+- Tab row `1: PRs  2: Issues  3: Actions` at the top of the pane. The digits switch tabs, and each tab keeps its level, page and row. `b` or `l` go up one level in the same tab with the cursor back on the row.
+- Cross links between tabs: linked issues in a pull request, linked pull requests in an issue, and a run opened from a pull request's pipeline. `b` then goes to the list of the tab that was opened.
+- `/gh` as a second name for the command, with the subcommands `prs` (`list`, `ls`), `issues` (`i`), `actions` (`ac`), `issue <n>`, `run <id>`, and `<n>`, which opens a pull request or, when there is none, an issue.
+- `main ✗ <workflow>` in the band when the newest run of a workflow on the default branch failed, and a symbol for the default branch on the Actions tab label. It is read every 5 minutes with a conditional request and opens the Actions tab (hotkey `3` while the band has the keyboard).
+- Setting `mainStatus` (`red` by default, or `off`).
+- Open issues are part of the counts in the band.
+
+### Changed
+
+- `/gh` opens the pane with the keyboard, so `1`, `2` and `3` work at once.
+- List pages fit the height of the pane, so Up and Down move item by item.
+- The run and issue detail titles and the tab row keep a calm highlight when focused.
+- Text from GitHub is stripped of terminal control characters.
+- Links to other repositories are shown, not opened.
+- The pane always shows the tab row; the list and the detail of a pull request are levels of the PRs tab.
+
+### Fixed
+
+- Going back from a detail landed on the first row instead of the row it was opened from.
+- A run's jobs are sorted like the pipeline of a pull request, and the issue state badge is followed by a space.
+- Tab and band hotkeys are drawn by the engine and counted in the widths.
+- A re-run of a run cannot be started twice at once, and repository names are validated.
+
 ## [0.2.1] - 2026-10-12
 
 ### Changed
@@ -94,6 +123,8 @@ First release.
 - Retry failed CI: `t` (band and pane) and `/pr rerun` (`/pr rr`) re-run only the failed jobs of the head commit's failed, timed-out or cancelled Actions runs (`gh run rerun <id> --failed`). Runs that are still in progress are skipped, and the button only appears while a run can be re-run. No confirmation, since it only restarts CI.
 - Edited comments count as activity: the pane shows `@bot edited 2 min ago`, "new since you looked" includes edits by others, and a toast says `comment updated by @bot`. The newest of the last 100 comments by creation or edit time is shown, so a review bot that updates an older comment in place surfaces. Edits within 60 seconds of creation (automatic post-processing by bots) do not count. The fast check watches `pulls/{n}/comments` too; edits are seen within the first 100 comments of a list.
 
+[0.3.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.3.0
+[0.2.1]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.2.1
 [0.2.0]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.2.0
 [0.1.4]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.4
 [0.1.3]: https://github.com/oborchers/claude-gh-status/releases/tag/v0.1.3
