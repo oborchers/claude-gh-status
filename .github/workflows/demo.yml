@@ -1,10 +1,17 @@
 # Demo pipeline for README screenshots of gh-status.
-# Runs only on pushes to demo/* branches. Jobs only sleep; nothing is built.
+# Runs on pushes to demo/* branches, and by hand (workflow_dispatch) to show a
+# red run on main. Jobs only sleep; nothing is built or deployed.
 name: Demo
 
 on:
   push:
     branches: ['demo/**']
+  workflow_dispatch:
+    inputs:
+      fail:
+        description: Let the integration job fail, to show a red run
+        type: boolean
+        default: false
 
 concurrency:
   group: demo-${{ github.ref }}
@@ -80,6 +87,10 @@ jobs:
         run: |
           sleep 60
           # Only some demo branches fail, so the list shows passing, running and failing pull requests.
+          if [ "${{ inputs.fail }}" = "true" ]; then
+            echo "Expected 200, got 503 from payments-sandbox (demo failure)"
+            exit 1
+          fi
           case "$GITHUB_REF_NAME" in
             demo/checkout-flow|demo/invoice-rounding)
               echo "Expected 200, got 503 from payments-sandbox (demo failure)"
