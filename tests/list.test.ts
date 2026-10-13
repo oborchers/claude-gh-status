@@ -74,6 +74,7 @@ describe('queries', () => {
     expect(REQUESTED_QUERY).toContain('$q')
     expect(COUNTS_QUERY).toContain('$yours')
     expect(COUNTS_QUERY).toContain('$requested')
+    expect(COUNTS_QUERY).toContain('$issues')
     expect(COUNTS_QUERY).toContain('first: 0')
   })
 })
@@ -477,17 +478,18 @@ describe('fetchList', () => {
 describe('fetchCounts', () => {
   test('reads the band numbers in one query', async () => {
     forgetTokens()
-    const body = { data: { open: { issueCount: 18 }, yours: { issueCount: 3 }, requested: { issueCount: 5 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
+    const body = { data: { open: { issueCount: 18 }, yours: { issueCount: 3 }, requested: { issueCount: 5 }, issues: { issueCount: 7 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
     const { exec, calls } = fakeExec([{ match: 'first: 0', stdout: JSON.stringify(body) }])
     const result = await fetchCounts(exec, location, 'me', () => '2026-10-12T12:00:00Z')
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
-    expect(result.counts).toEqual({ open: 18, yours: 3, requested: 5, at: '2026-10-12T12:00:00Z' })
+    expect(result.counts).toEqual({ open: 18, yours: 3, requested: 5, issues: 7, at: '2026-10-12T12:00:00Z' })
     expect(result.rateLimit?.remaining).toBe(4000)
     const graphql = calls.filter(call => call.argv[1] === 'api')
     expect(graphql).toHaveLength(1)
     expect(graphql[0]?.argv).toContain('yours=repo:acme/app is:pr is:open author:@me')
     expect(graphql[0]?.argv).toContain('requested=repo:acme/app is:pr is:open review-requested:@me')
+    expect(graphql[0]?.argv).toContain('issues=repo:acme/app is:issue is:open')
     expect(graphql[0]?.argv).not.toContain('-F')
   })
 
@@ -495,7 +497,7 @@ describe('fetchCounts', () => {
     forgetTokens()
     const { exec } = fakeExec([{ match: 'first: 0', stdout: JSON.stringify({ data: {} }) }])
     const result = await fetchCounts(exec, location, 'me')
-    expect(result.kind === 'ok' && [result.counts.yours, result.counts.requested]).toEqual([0, 0])
+    expect(result.kind === 'ok' && [result.counts.yours, result.counts.requested, result.counts.issues]).toEqual([0, 0, 0])
   })
 
   test('passes a gh failure through', async () => {
