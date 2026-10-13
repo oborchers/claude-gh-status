@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Setting `paneWidthPercent` (38 by default): the docked pane opens with that share of the terminal width, at least 60 columns. `0` leaves the width to Claude Code. A width you drag the pane to still wins.
+- Setting `paneWidthPercent` (35 by default): the docked pane opens with that share of the terminal width, at least 60 columns. `0` leaves the width to Claude Code. A width you drag the pane to still wins.
 
 ## [0.3.0] - 2026-10-13
 

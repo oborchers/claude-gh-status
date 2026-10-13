@@ -507,12 +507,12 @@ describe('the /pr command', () => {
     expect(ran.text).toContain('PR pane opened')
   })
 
-  test('the docked pane asks for 38% of the terminal width, at least 60 columns', async ($, on) => {
+  test('the docked pane asks for 35% of the terminal width, at least 60 columns', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await runPr($)
-    // runCommand reports a 160-column terminal: 38% of it is 61.
-    expect((world.opened[0] as { columns?: number }).columns).toBe(61)
+    // runCommand reports a 160-column terminal: 35% of it is 56, raised to the floor of 60.
+    expect((world.opened[0] as { columns?: number }).columns).toBe(60)
   })
 
   test('refresh forces a full fetch', async ($, on) => {

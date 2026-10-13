@@ -150,7 +150,7 @@ const mainStatusState = atom({ plugin: 'gh-status', key: 'mainStatus' } as const
  */
 /** Options the render hooks read; set by register. */
 /** The docked pane's default share of the terminal width, in percent (option `paneWidthPercent`); 0 leaves it to Claude Code. */
-const DEFAULT_PANE_WIDTH_PERCENT = 38
+const DEFAULT_PANE_WIDTH_PERCENT = 35
 /** The narrowest docked pane the share asks for, in cells. */
 const DOCK_MIN_COLUMNS = 60
 
