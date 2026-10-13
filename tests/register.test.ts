@@ -507,6 +507,14 @@ describe('the /pr command', () => {
     expect(ran.text).toContain('PR pane opened')
   })
 
+  test('the docked pane asks for 35% of the terminal width, at least 60 columns', async ($, on) => {
+    const world = setup(on)
+    await start($, world)
+    await runPr($)
+    // runCommand reports a 160-column terminal: 35% of it is 56, raised to the floor of 60.
+    expect((world.opened[0] as { columns?: number }).columns).toBe(60)
+  })
+
   test('refresh forces a full fetch', async ($, on) => {
     const world = setup(on)
     await start($, world)
@@ -1338,7 +1346,7 @@ describe('a pull request picked from the list', () => {
     expect(world.opened).toContainEqual(expect.objectContaining({ id: PANE, focus: true }))
     expect(world.numberLookups()).toContain(14580)
     const pane = await showPane($)
-    expect(await sees(pane, /#14580 /)).toBe(true)
+    expect(await sees(pane, /^#14580$/)).toBe(true)
     expect(await pane.find({ key: 'back' })).toBeDefined()
     // The header line of the pick is a Button keyed like the row it was opened from.
     expect(await pane.find({ key: 'pr-14580' })).toBeDefined()
@@ -1391,7 +1399,7 @@ describe('a pull request picked from the list', () => {
     await pane.press({ key: 'pr-14580' })
     await world.clock.settle()
     expect(world.numberLookups().length).toBeGreaterThan(lookups)
-    expect(await sees(pane, /#14580 /)).toBe(true)
+    expect(await sees(pane, /^#14580$/)).toBe(true)
     expect(writes(world)).toEqual([])
     await pane.unmount()
   })
@@ -1403,7 +1411,7 @@ describe('a pull request picked from the list', () => {
     await world.clock.settle()
     expect(world.numberLookups()).toEqual([])
     const pane = await showPane($)
-    expect(await sees(pane, /#14640 /)).toBe(true)
+    expect(await sees(pane, /^#14640$/)).toBe(true)
     await pane.unmount()
   })
 
@@ -1663,7 +1671,7 @@ describe('the list of open pull requests', () => {
     expect(world.closed).toEqual([])
     expect(world.numberLookups()).toContain(14580)
     // The same mounted pane now draws the detail.
-    expect(await sees(ui, /#14580 /)).toBe(true)
+    expect(await sees(ui, /^#14580$/)).toBe(true)
     expect(await ui.find({ key: 'back' })).toBeDefined()
     expect(await ui.find({ key: 'list-next' })).toBeUndefined()
     await ui.unmount()
@@ -2402,7 +2410,7 @@ describe('reviews', () => {
       expect(ran.text).toContain('Request changes on cli/cli #14580')
       const pane = await showPane($)
       await typeInto(pane, world, 'selected one')
-      expect(await sees(pane, /#14580 /)).toBe(true)
+      expect(await sees(pane, /^#14580$/)).toBe(true)
       await world.clock.advance(SETTLED_MS)
       const before = world.argvs.length
       await pane.press({ key: 'confirm' })
@@ -2578,7 +2586,7 @@ describe('safety: the fresh snapshot goes to the slot it belongs to', () => {
     expect(queries.some(query => query.includes('$branch'))).toBe(true)
     expect(queries.some(query => query.includes('$number: Int!'))).toBe(false)
     const pane = await showPane($)
-    expect(await sees(pane, /#14640 /)).toBe(true)
+    expect(await sees(pane, /^#14640$/)).toBe(true)
     await pane.unmount()
     await band.unmount()
   })
@@ -2751,10 +2759,10 @@ describe('safety: a change of repository drops the pick and the pending write', 
     await runPr($, '14580')
     await world.clock.settle()
     const pane = await showPane($)
-    expect(await sees(pane, /#14580 /)).toBe(true)
+    expect(await sees(pane, /^#14580$/)).toBe(true)
     await $.classic.CwdChanged({ old_cwd: '/work/cli', new_cwd: '/work/cli/sub' })
     await world.clock.settle()
-    expect(await sees(pane, /#14580 /)).toBe(true)
+    expect(await sees(pane, /^#14580$/)).toBe(true)
     await pane.unmount()
   })
 

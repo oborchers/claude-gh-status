@@ -90,6 +90,25 @@ export function fitSegments<T extends Fittable>(segments: T[], columns: number, 
   return kept
 }
 
+/** Lines `text` takes when wrapped at word boundaries into `columns` cells; a word longer than a line is split. At least 1. */
+export function wrappedLines(text: string, columns: number): number {
+  const width = Math.max(1, columns)
+  let lines = 1
+  let used = 0
+  for (const word of text.split(/\s+/).filter((part) => part.length > 0)) {
+    const size = cellWidth(word)
+    const needed = used === 0 ? size : used + 1 + size
+    if (needed <= width) {
+      used = needed
+      continue
+    }
+    if (used > 0) lines += 1
+    lines += Math.floor(Math.max(0, size - 1) / width)
+    used = size % width === 0 ? width : size % width
+  }
+  return lines
+}
+
 /** Section heading line: `── Title ─────` filled to `columns`. */
 export function headingLine(title: string, columns: number): string {
   const head = `── ${truncate(title, Math.max(1, columns - 5))} `

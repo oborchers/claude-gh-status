@@ -54,20 +54,22 @@ export function titleButton(table: UiTable, key: string, label: string, onPress:
 }
 
 /**
- * The header row: `lead` (a badge or glyph, `leadWidth` cells), then the title as a plain
- * Button keyed `titleKey` whose press only refreshes (a stable focus anchor), then the
- * navigation. The title is cut to what is left.
+ * The header: `lead` (a badge or glyph), then the number as a plain Button keyed `titleKey`
+ * whose press only refreshes (a stable focus anchor), then the navigation; the whole
+ * title wraps on the lines below.
  */
-export function detailHeader(table: UiTable, columns: number, lead: RenderElement | null, leadWidth: number, titleKey: string, title: string, handlers: Pick<RepoHandlers, 'back' | 'refresh'>): RenderElement {
-  const { Box } = table
-  const label = truncate(title, Math.max(1, columns - leadWidth - navWidth()))
-  return (
+export function detailHeader(table: UiTable, lead: RenderElement | null, titleKey: string, number: string, title: string, handlers: Pick<RepoHandlers, 'back' | 'refresh'>): RenderElement[] {
+  const { Box, Text } = table
+  return [
     <Box flexDirection="row" flexWrap="nowrap">
       {lead === null ? null : <Box flexShrink={0}>{lead}</Box>}
-      {titleButton(table, titleKey, label, () => handlers.refresh())}
+      {titleButton(table, titleKey, number, () => handlers.refresh())}
       {navButtons(table, handlers)}
-    </Box>
-  )
+    </Box>,
+    <Text bold wrap="wrap">
+      {title}
+    </Text>,
+  ]
 }
 
 /** The one line under the header while the data is stale: its age, what is wrong, when the next try comes. Empty when fresh. */

@@ -5,7 +5,7 @@ import type { RenderElement } from 'claude-code'
 import { availableActions, rerunnableRunIds } from '../actions'
 import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, RepoLocation, ReviewThread, Snapshot, Status } from '../model'
 import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
-import { cellWidth, count, headingLine, isForeignRepo, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
+import { cellWidth, count, headingLine, isForeignRepo, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText, wrappedLines } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
@@ -541,7 +541,7 @@ function navWidth(view: View, handlers: Handlers): number {
 }
 
 /**
- * The title of a selected pull request: a plain Button keyed pr-<n> whose press only
+ * The number of a selected pull request: a plain Button keyed pr-<n> whose press only
  * refreshes. It keeps the key of the row that opened it, so a desktop pane that drops
  * the focus when the pressed Button is gone from the next drawing keeps it here.
  */
@@ -550,7 +550,7 @@ function selectedTitle(table: UiTable, view: View, handlers: Handlers, number: n
   return titleButton(table, key, title, () => handlers.refresh())
 }
 
-/** The branch pull request's title: on the terminal the `pr-anchor` Button drawn calm, on the desktop the Link. */
+/** The branch pull request's number: on the terminal the `pr-anchor` Button drawn calm, on the desktop the Link. */
 function branchTitle(table: UiTable, view: View, handlers: Handlers, href: string, title: string): RenderElement {
   if (view.surface === 'desktop') return prAnchor(table, view, handlers, href, title)
   return titleButton(table, 'pr-anchor', title, () => handlers.openOnGitHub())
@@ -561,8 +561,8 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
   const { pr, account } = snapshot
   const columns = view.columns
   const badge = prBadge(pr)
-  // One line: the colored state badge, then the title, cut to what is left.
-  const title = truncate(`${view.isSelected === true ? '' : 'PR '}#${pr.number} ${pr.title}`, Math.max(1, columns - cellWidth(badge.text) - 3 - navWidth(view, handlers)))
+  // First line: the colored state badge, the number and the navigation; the whole title wraps below it.
+  const number = `${view.isSelected === true ? '' : 'PR '}#${pr.number}`
   return [
     <Box flexDirection="row" flexWrap="nowrap">
       <Box flexShrink={0}>
@@ -571,9 +571,12 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
         </Text>
         <Text> </Text>
       </Box>
-      {view.isSelected === true ? selectedTitle(table, view, handlers, pr.number, title) : branchTitle(table, view, handlers, pr.url, title)}
+      {view.isSelected === true ? selectedTitle(table, view, handlers, pr.number, number) : branchTitle(table, view, handlers, pr.url, number)}
       {navButtons(table, view, handlers, LIST_GAP)}
     </Box>,
+    <Text bold wrap="wrap">
+      {pr.title}
+    </Text>,
     <Text wrap="truncate-end">
       {truncate(`${pr.headRefName} → ${pr.baseRefName}`, columns)}
     </Text>,
@@ -711,7 +714,7 @@ export function paneRowCount(view: View, handlers: Pick<Handlers, 'openRun'> = {
   }
   const { pr } = snapshot
   const sections = [
-    HEADER_ROWS + (snapshot.stale ? 1 : 0),
+    HEADER_ROWS + wrappedLines(pr.title, view.columns) + (snapshot.stale ? 1 : 0),
     mergeRowCount(view, pr, status, snapshot.account.login),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),

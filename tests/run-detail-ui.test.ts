@@ -114,7 +114,7 @@ describe('the run detail', () => {
     for (const surface of SURFACES) {
       const ui = await rig.draw($, surface, viewOf(snapshotOf(runOf(), jobs)), handlersFor([]))
       const text = await textOf(ui)
-      for (const expected of ['✓ ', '#12 CI', 'b: back to list', 'l: list', 'feat/things · push · @anna · abcdef0', 'started 4 min ago · 3:12', '── Jobs', '✓ build', '✗ lint', '✗ Run eslint', '● e2e', '▸ Run tests', 'o: github', 'c: copy url', 'r: refresh']) {
+      for (const expected of ['✓ ', '#12', 'CI', 'b: back to list', 'l: list', 'feat/things · push · @anna · abcdef0', 'started 4 min ago · 3:12', '── Jobs', '✓ build', '✗ lint', '✗ Run eslint', '● e2e', '▸ Run tests', 'o: github', 'c: copy url', 'r: refresh']) {
         expect(text).toContain(expected)
       }
       await ui.unmount()
@@ -203,7 +203,10 @@ describe('the run detail', () => {
     const jobs = [jobOf({ name: long, url: 'https://ci/1', state: 'failure', failedStep: long }), jobOf({ jobId: 2, name: long, url: 'https://ci/2' })]
     for (const columns of [40, 80, 160]) {
       const ui = await rig.draw($, 'terminal', viewOf(snapshotOf(runOf({ name: long, state: 'failure' }), jobs), columns), handlersFor([]))
-      for (const row of rowsOf(await ui.drawn())) {
+      // the full run name is its own bold Text that wraps; every other line must fit
+      const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.wrap === 'wrap' && text.props.bold === true)
+      expect(title?.props.wrap).toBe('wrap')
+      for (const row of rowsOf(await ui.drawn()).filter((line) => line !== long)) {
         for (const piece of row.split('  ')) expect(cellWidth(piece)).toBeLessThanOrEqual(columns)
       }
       const keys = await keysOf(ui)
@@ -221,12 +224,15 @@ describe('the run detail header title', () => {
     for (const surface of SURFACES) {
       const ui = await rig.draw($, surface, viewOf(snapshotOf(runOf())), handlersFor([]))
       const button = (await ui.find({ key: 'run-900' })) as { props: Record<string, unknown>; children: Piece[] }
-      expect(button.props.label).toBe('#12 CI')
+      expect(button.props.label).toBe('#12')
       expect(button.props.plain).toBe(true)
       expect(button.children).toHaveLength(1)
       expect(button.children[0]?.props?.color).toBeUndefined()
       expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
       expect(button.children[0]).not.toHaveProperty('hover')
+      // the full name is its own bold Text on the line below, wrapped, never truncated
+      const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.bold === true && JSON.stringify(text.children) === '["CI"]')
+      expect(title?.props.wrap).toBe('wrap')
       await ui.unmount()
     }
   })

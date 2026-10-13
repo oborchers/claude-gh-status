@@ -1,6 +1,6 @@
 {
   "name": "gh-status",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions.",
   "types": "./types/index.d.ts",
   "author": {
@@ -50,6 +50,12 @@
       "description": "red shows the failing workflows of the default branch in the band (for example 'main ✗ CI'); off hides it and stops reading them",
       "options": ["red", "off"],
       "default": "red"
+    },
+    "paneWidthPercent": {
+      "type": "number",
+      "title": "Pane width (%)",
+      "description": "Share of the terminal width the docked pane opens with (at least 60 columns); 0 leaves it to Claude Code. A width you drag the pane to wins.",
+      "default": 35
     }
   }
 }

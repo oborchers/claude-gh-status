@@ -10,7 +10,7 @@ import { PALETTES, badgeBackground } from '../src/ui/colors'
 import type { Palette } from '../src/ui/colors'
 import { prBadge } from '../src/status'
 import type { Handlers, View } from '../src/ui/contract'
-import { cellWidth, count, fitSegments, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart } from '../src/ui/format'
+import { cellWidth, count, fitSegments, headingLine, repeatsBadge, snapshotLine, truncate, truncateStart, wrappedLines } from '../src/ui/format'
 import { confirmRowCount } from '../src/ui/confirm'
 import { paneRowCount, renderPane, sortChecks } from '../src/ui/pane'
 import { makeCheck, makeLocation, makePr, makeSnapshot } from './fixtures/pr-builder'
@@ -60,6 +60,37 @@ describe('cellWidth and truncate', () => {
     expect(count(1, 'thread', 'threads')).toBe('1 thread')
     expect(count(2, 'thread', 'threads')).toBe('2 threads')
     expect(count(0, 'thread', 'threads')).toBe('0 threads')
+  })
+})
+
+describe('wrappedLines', () => {
+  test('text that fits is one line, also at exactly the width', () => {
+    expect(wrappedLines('hello world', 40)).toBe(1)
+    expect(wrappedLines('hello world', 11)).toBe(1)
+    expect(wrappedLines('hello world', 10)).toBe(2)
+  })
+
+  test('wraps at word boundaries', () => {
+    expect(wrappedLines('aaa bbb ccc', 7)).toBe(2)
+    expect(wrappedLines('aaa bbb ccc', 4)).toBe(3)
+    expect(wrappedLines('one two three four five six', 10)).toBe(3)
+  })
+
+  test('splits a word longer than the line', () => {
+    expect(wrappedLines('abcdefghij', 4)).toBe(3)
+    expect(wrappedLines('abcdefgh', 4)).toBe(2)
+    expect(wrappedLines('ab abcdefghij', 4)).toBe(4)
+    expect(wrappedLines('abcdefghij c', 4)).toBe(3)
+  })
+
+  test('an empty or blank string is one line, and a width below 1 counts as 1', () => {
+    expect(wrappedLines('', 40)).toBe(1)
+    expect(wrappedLines('   ', 40)).toBe(1)
+    expect(wrappedLines('ab', 0)).toBe(2)
+  })
+
+  test('counts wide characters by their cells', () => {
+    expect(wrappedLines('💬💬💬', 4)).toBe(2)
   })
 })
 
@@ -584,7 +615,7 @@ describe('renderPane', () => {
       const ui = await rig.pane($, surface, blocked(80), handlers)
       const text = await textOf(ui)
       for (const expected of [
-        'PR #42 add things',
+        'PR #42\nadd things',
         'feat/things → main',
         '@me (active)',
         'abcdef0',
@@ -692,7 +723,10 @@ describe('renderPane', () => {
     for (const columns of [40, 80, 160]) {
       for (const surface of SURFACES) {
         const ui = await rig.pane($, surface, view(columns), handlers)
-        for (const row of rowsOf(await ui.drawn())) {
+        // the full title is its own bold Text that wraps; every other line must fit
+        const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.wrap === 'wrap' && text.props.bold === true)
+        expect(title?.props.wrap).toBe('wrap')
+        for (const row of rowsOf(await ui.drawn()).filter((line) => line !== long + long)) {
           // button rows wrap, so measure each button on its own
           for (const piece of row.split('  ')) expect(cellWidth(piece)).toBeLessThanOrEqual(columns)
         }
@@ -923,14 +957,17 @@ describe('pane merge queue and check lists', () => {
     expect(text).toContain('✓ pipeline passed · 1 passed · 2 skipped')
   })
 
-  test('the header has the title once, truncated to one line, and no URL line', async ($, on) => {
+  test('the header has the title once, in full, on its own line, and no URL line', async ($, on) => {
     const rig = createRig(on)
     const title = 'a very long pull request title that goes on and on and on and on and on'
     for (const surface of SURFACES) {
       const ui = await rig.pane($, surface, prView({ title }, 40), handlersFor([]))
       const rows = rowsOf(await ui.drawn())
-      expect(rows[0]).toContain('PR #42 a very long')
+      expect(rows[0]).toContain('PR #42')
       expect(cellWidth(rows[0] ?? '')).toBeLessThanOrEqual(40)
+      expect(rows[0]).not.toContain('a very long')
+      expect(rows[1]).toBe(title)
+      expect(rows.filter((row) => row.includes('a very long'))).toHaveLength(1)
       expect(rows.join('\n')).not.toContain('https://')
       await ui.unmount()
     }
@@ -1267,6 +1304,15 @@ describe('paneRowCount', () => {
     expect(small).toBeLessThan(40)
   })
 
+  test('grows with a long title at a narrow width, and not at a wide one', () => {
+    const title = 'a very long pull request title that goes on and on and on and on and on'
+    const short = paneRowCount(prView({ title: 'short' }, 40))
+    const long = paneRowCount(prView({ title }, 40))
+    expect(long - short).toBe(wrappedLines(title, 40) - 1)
+    expect(long).toBeGreaterThan(short)
+    expect(paneRowCount(prView({ title }, 200))).toBe(paneRowCount(prView({ title: 'short' }, 200)))
+  })
+
   test('a PR without a status asks for a few rows', () => {
     const view = viewFor({ kind: 'loading', at: '' } as Snapshot, 80)
     expect(paneRowCount(view)).toBe(6)
@@ -1448,11 +1494,14 @@ describe('the list entry points', () => {
       const view = { ...prView({ number: 42, title: 'A fairly long title for the header row to cut', checks: [makeCheck()] }, 70), isSelected: true }
       const ui = await rig.pane($, surface, view, handlersFor(calls, { back: () => void calls.push('back'), openList: () => void calls.push('openList') }))
       const lines = (await textOf(ui)).split('\n')
-      expect(lines[0]).toContain('#42 A fairly')
+      expect(lines[0]).toContain('#42')
       expect(lines[0]).not.toContain('PR #42')
+      expect(lines[0]).not.toContain('A fairly')
+      // the whole title follows on its own line, never cut
+      expect(lines[1]).toBe('A fairly long title for the header row to cut')
       expect(lines[0]).toContain('b: back to list')
       expect(lines[0]).not.toContain('all PRs')
-      for (const row of lines.slice(0, 4)) expect(cellWidth(row)).toBeLessThanOrEqual(70)
+      for (const row of lines.slice(0, 1)) expect(cellWidth(row)).toBeLessThanOrEqual(70)
       expect(hotkeysOf(await ui.findAll({ type: 'Button' }))).toEqual(expect.arrayContaining(['b', 'l']))
       await ui.press({ key: 'pr-42' })
       await ui.press({ key: 'back' })
@@ -1473,12 +1522,15 @@ describe('the list entry points', () => {
       const base = { ...prView({ number: 42, title: 'Calm title', checks: [makeCheck()] }, 80), isSelected }
       const ui = await rig.pane($, 'terminal', base, handlersFor([], { back: () => {}, openList: () => {} }))
       const button = (await ui.find({ key })) as { props: Record<string, unknown>; children: Piece[] }
-      expect(button.props.label).toContain('#42 Calm title')
+      expect(button.props.label).toBe(isSelected ? '#42' : 'PR #42')
       expect(button.children).toHaveLength(1)
       expect(button.children[0]?.props?.color).toBeUndefined()
       expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
       expect(button.children[0]).not.toHaveProperty('hover')
       expect(await ui.find({ key: `head-${key}` })).toBeUndefined()
+      // the full title is its own bold Text on the line below, wrapped, never truncated
+      const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.bold === true && JSON.stringify(text.children) === '["Calm title"]')
+      expect(title?.props.wrap).toBe('wrap')
       await ui.unmount()
     }
   })

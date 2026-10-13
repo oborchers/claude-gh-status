@@ -122,7 +122,7 @@ describe('the issue detail', () => {
     for (const surface of SURFACES) {
       const ui = await rig.draw($, surface, viewOf(snapshotOf(issueOf())), handlersFor([]))
       const text = await textOf(ui)
-      for (const expected of [' open ', '#5 Crash on start', 'b: back to list', 'l: list', '@anna · opened 2 h ago', 'bug', 'assignees: @ben, @cy', 'milestone: v2', '── Description', 'It crashes.', '── Comments (0)', 'no comments yet', 'o: github', 'c: copy url', 'r: refresh']) {
+      for (const expected of [' open ', '#5', 'Crash on start', 'b: back to list', 'l: list', '@anna · opened 2 h ago', 'bug', 'assignees: @ben, @cy', 'milestone: v2', '── Description', 'It crashes.', '── Comments (0)', 'no comments yet', 'o: github', 'c: copy url', 'r: refresh']) {
         expect(text).toContain(expected)
       }
       await ui.unmount()
@@ -252,7 +252,8 @@ describe('the issue detail', () => {
     const stale = await rig.draw($, 'terminal', viewOf(snapshotOf(issueOf(), problem)), handlersFor(calls))
     const staleText = await textOf(stale)
     expect(staleText).toContain('showing last data from 2 min ago, GitHub unavailable (504), retrying in 20 s')
-    expect(staleText).toContain('#5 Crash on start')
+    expect(staleText).toContain('#5')
+    expect(staleText).toContain('Crash on start')
   })
 
   test('never exceeds the columns, and keys are unique', async ($, on) => {
@@ -261,7 +262,10 @@ describe('the issue detail', () => {
     const issue = issueOf({ title: long, linkedPrs: [{ number: 8, title: long, state: 'open' }], milestone: long, assignees: [long] })
     for (const columns of [40, 80, 160]) {
       const ui = await rig.draw($, 'terminal', viewOf(snapshotOf(issue), columns), handlersFor([]))
-      for (const row of rowsOf(await ui.drawn())) {
+      // the full title is its own bold Text that wraps; every other line must fit
+      const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.wrap === 'wrap' && text.props.bold === true)
+      expect(title?.props.wrap).toBe('wrap')
+      for (const row of rowsOf(await ui.drawn()).filter((line) => line !== long)) {
         for (const piece of row.split('  ')) expect(cellWidth(piece)).toBeLessThanOrEqual(columns)
       }
       const keys = await keysOf(ui)
@@ -279,12 +283,15 @@ describe('the issue detail header title', () => {
     for (const surface of SURFACES) {
       const ui = await rig.draw($, surface, viewOf(snapshotOf(issueOf())), handlersFor([]))
       const button = (await ui.find({ key: 'issue-5' })) as { props: Record<string, unknown>; children: Piece[] }
-      expect(button.props.label).toBe('#5 Crash on start')
+      expect(button.props.label).toBe('#5')
       expect(button.props.plain).toBe(true)
       expect(button.children).toHaveLength(1)
       expect(button.children[0]?.props?.color).toBeUndefined()
       expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
       expect(button.children[0]).not.toHaveProperty('hover')
+      // the full title is its own bold Text on the line below, wrapped, never truncated
+      const title = (await ui.findAll({ type: 'Text' })).find((text) => text.props.bold === true && JSON.stringify(text.children) === '["Crash on start"]')
+      expect(title?.props.wrap).toBe('wrap')
       await ui.unmount()
     }
   })
