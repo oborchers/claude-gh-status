@@ -1,6 +1,6 @@
 // The list view of the pane: the repository's open pull requests, grouped, one page at a time.
 // A pull request takes two lines and a blank one: the title line (status symbol,
-// title, labels) and a dim line of facts, together one Button that opens it.
+// title, labels) and a dim line of facts; the title is the Button that opens it.
 
 import type { RenderElement } from 'claude-code'
 
@@ -11,8 +11,6 @@ import { cellWidth, headingLine, retryText, unavailableText } from './format'
 import type { ListHandlers, ListView, UiTable } from './contract'
 import { GAP, PREFIX_WIDTH, blankLine, fitTitle, footerRows, joinFacts, listRow, messageLine, summaryLine } from './row'
 import type { Footer, Run } from './row'
-
-export { FOCUS_BG, FOCUS_DIM, FOCUS_FG } from './row'
 
 const NO_STATUS = ' '
 const DRAFT = 'draft '
@@ -75,23 +73,24 @@ function metaRuns(item: ListItem, nowMs: number): Run[] {
   return joinFacts(facts)
 }
 
-/**
- * A pull request: one Button of two lines, so the focus ring stops once per PR. The
- * engine inverts every piece but the one that opens the facts line, from its newline on.
- */
+/** A pull request: the title is the Button; the status symbol, labels and facts stay outside it. */
 function prRow(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
-  const { palette } = view
   const key = `pr-${item.number}`
-  const isFocused = view.focusedKey === key
   // On a very narrow pane the draft prefix goes first; the title is dim anyway.
   const hasDraftPrefix = item.isDraft && columns - PREFIX_WIDTH - cellWidth(DRAFT) >= 4
   const room = Math.max(1, columns - PREFIX_WIDTH - (hasDraftPrefix ? cellWidth(DRAFT) : 0))
   const { title, labels } = fitTitle(item.title, item.labels, room)
-  const first: Run[] = [statusOf(item), { text: ' ' }]
-  if (hasDraftPrefix) first.push({ text: DRAFT, isDim: true })
-  first.push({ text: title, isBold: !item.isDraft, isDim: item.isDraft })
-  if (labels.length > 0) first.push({ text: GAP }, ...labels)
-  return listRow(table, palette, { key, rowKey: `row-${item.number}`, label: `#${item.number} ${item.title}`, isFocused, columns, first, facts: metaRuns(item, view.nowMs), onPress: () => handlers.selectPr(item.number) })
+  const after: Run[] = labels.length > 0 ? [{ text: GAP }, ...labels] : []
+  return listRow(table, view.palette, {
+    key,
+    label: `#${item.number} ${item.title}`,
+    columns,
+    symbol: statusOf(item),
+    title: { text: `${hasDraftPrefix ? DRAFT : ''}${title}`, isBold: !item.isDraft, isDim: item.isDraft },
+    after,
+    facts: metaRuns(item, view.nowMs),
+    onPress: () => handlers.selectPr(item.number),
+  })
 }
 
 /** The summary line: '18 open · 1 to 25 · page 1 of 2 · drafts hidden', the account dim at the end. */

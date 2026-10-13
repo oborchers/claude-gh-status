@@ -7,12 +7,10 @@ import type { IssuesView, RepoHandlers } from '../src/ui/contract'
 import { cellWidth } from '../src/ui/format'
 import { renderIssues } from '../src/ui/issues'
 import { SURFACES, createRig, hotkeysOf, linesOf, nodesOf, textOf, textsOf } from './fixtures/ui-rig'
+import type { Node } from './fixtures/ui-rig'
 import { makeLocation } from './fixtures/pr-builder'
 
 const NOW = Date.parse('2026-10-12T12:00:00Z')
-const FOCUS_BG = '#30363d'
-const FOCUS_FG = '#e6edf3'
-const FOCUS_DIM = '#8b949e'
 
 function issue(number: number, extra: Partial<IssueItem> = {}): IssueItem {
   return {
@@ -48,7 +46,7 @@ function crowd(others = 14): IssueItem[] {
 }
 
 function viewOf(issues: IssueList | null, extra: Partial<IssuesView> = {}): IssuesView {
-  return { issues, page: 0, focusedKey: null, viewer: 'me', nowMs: NOW, columns: 100, palette: PALETTES.claude, ...extra }
+  return { issues, page: 0, viewer: 'me', nowMs: NOW, columns: 100, palette: PALETTES.claude, ...extra }
 }
 
 function handlersFor(calls: string[]): RepoHandlers {
@@ -206,12 +204,12 @@ describe('renderIssues rows', () => {
     const rig = rigFor(on)
     for (const palette of [PALETTES.claude, PALETTES.github]) {
       const ui = await show(rig, $, 'terminal', viewOf(listOf([rich()]), { palette }))
-      const texts = textsOf(await ui.find({ key: 'issue-12' }))
+      const texts = textsOf(await ui.drawn())
       const named = (content: string) => texts.find((node) => node.children?.[0] === content)
       expect(named('◯')?.props?.color).toBe(palette.success)
       expect(named('Checkout fails on retry')?.props?.bold).toBe(true)
       expect(named('bug')?.props?.color).toBe(mutedLabelColor('d73a4a'))
-      const start = texts.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
+      const start = texts.findIndex((node) => node.children?.[0] === '    ')
       for (const node of texts.slice(start + 1).filter((candidate) => String(candidate.children?.[0]).trim() !== '')) {
         expect(node.props?.dimColor).toBe(true)
         expect(node.props?.color).toBeUndefined()
@@ -246,65 +244,50 @@ describe('renderIssues rows', () => {
     expect(await titleLine('A very long issue title that never ends and keeps going on and on', [], 30)).toContain('…')
   })
 
-  describe('the focused row', () => {
+  describe('the row styling', () => {
+    const textsIn = (node: unknown): Node[] => nodesOf(node).filter((entry) => entry.type === 'Text' && typeof entry.children?.[0] === 'string')
     const colored = [issue(15, { title: 'fix', labels: [{ name: 'bug', color: 'd73a4a' }] })]
 
-    test('marker before the mark and the title line drawn swapped, filled to the width', async ($, on) => {
+    test('only the title is the Button, one monochrome Text; symbol, labels and facts stay outside with their colors', async ($, on) => {
       const rig = rigFor(on)
       for (const palette of [PALETTES.claude, PALETTES.github]) {
-        const ui = await show(rig, $, 'terminal', viewOf(listOf(colored), { palette, focusedKey: 'issue-15' }))
-        expect((await linesOf(ui)).filter((line) => line.startsWith('▸'))).toEqual(['▸ ◯ fix  bug'])
-        const texts = textsOf(await ui.find({ key: 'issue-15' }))
-        const first = texts.slice(0, texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
-        const named = (content: string) => first.find((node) => node.children?.[0] === content)
-        expect(named('◯')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.success })
-        expect(named('fix')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG, bold: true })
-        expect(named('bug')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: mutedLabelColor('d73a4a') })
-        expect(named('▸ ')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.pending })
-        expect(first.at(-1)?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
-        expect(cellWidth(first.map((node) => String(node.children?.[0])).join(''))).toBe(100)
+        const ui = await show(rig, $, 'terminal', viewOf(listOf(colored), { palette }))
+        const button = (await ui.find({ key: 'issue-15' })) as { props: Record<string, unknown>; children: Node[] }
+        expect(button.children).toHaveLength(1)
+        expect(button.children[0]?.children).toEqual(['fix'])
+        expect(button.children[0]?.props?.color).toBeUndefined()
+        expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
+        expect(button.children[0]?.props?.bold).toBe(true)
+        expect(button.children[0]).not.toHaveProperty('hover')
+        const outside = textsIn(await ui.drawn()).filter((entry) => !(button.children as Node[]).includes(entry))
+        const named = (content: string) => outside.find((entry) => entry.children?.[0] === content)
+        expect(named('◯')?.props?.color).toBe(palette.success)
+        expect(named('bug')?.props?.color).toBe(mutedLabelColor('d73a4a'))
+        for (const entry of outside) expect(entry.props?.backgroundColor).toBeUndefined()
+        expect(outside.some((entry) => entry.children?.[0] === '▸ ')).toBe(false)
         await ui.unmount()
       }
     })
 
-    test('the facts line: the opening piece as is, the later ones swapped, filled to the width', async ($, on) => {
+    test('the facts line is plain Text outside the Button, no inverse pieces, no padding to the width', async ($, on) => {
       const rig = rigFor(on)
-      const ui = await show(rig, $, 'terminal', viewOf(listOf(colored), { focusedKey: 'issue-15' }))
-      const texts = textsOf(await ui.find({ key: 'issue-15' }))
-      const second = texts.slice(texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
-      expect(second.length).toBeGreaterThan(3)
-      expect(second[0]?.props).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
-      for (const node of second.slice(1)) expect(node.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_DIM })
-      expect(cellWidth(second.map((node) => String(node.children?.[0])).join('').slice(1))).toBe(100)
+      const ui = await show(rig, $, 'terminal', viewOf(listOf(colored)))
+      const button = (await ui.find({ key: 'issue-15' })) as { children: Node[] }
+      const facts = textsIn(await ui.drawn()).filter((entry) => !(button.children as Node[]).includes(entry) && String(entry.children?.[0]).includes('#15'))
+      expect(facts).toHaveLength(1)
+      expect(facts[0]?.props?.dimColor).toBe(true)
+      const lines = await linesOf(ui)
+      expect(lines.some((line) => line.startsWith('    #15'))).toBe(true)
+      for (const line of lines.filter((line) => line.startsWith('    #'))) expect(cellWidth(line)).toBeLessThan(100)
       await ui.unmount()
     })
 
-    test('normal colors when another row, or none, has the focus', async ($, on) => {
-      const rig = rigFor(on)
-      for (const focusedKey of [null, 'issue-99']) {
-        const ui = await show(rig, $, 'terminal', viewOf(listOf(colored), { focusedKey }))
-        const texts = textsOf(await ui.find({ key: 'issue-15' }))
-        expect(texts.find((node) => node.children?.[0] === '◯')?.props?.backgroundColor).toBeUndefined()
-        expect(texts.some((node) => node.children?.[0] === '▸ ')).toBe(false)
-        for (const node of texts.slice(texts.findIndex((entry) => String(entry.children?.[0]).startsWith('\n')) + 1)) expect(node.props?.backgroundColor).toBeUndefined()
-        await ui.unmount()
-      }
-    })
-
-    test('a hovered row looks like a focused one; the keyed Box holds only the Button', async ($, on) => {
+    test('the row has no keyed Box and no hover pieces; the focused look is the engine inverse on the title', async ($, on) => {
       const rig = rigFor(on)
       const ui = await show(rig, $, 'terminal', viewOf(listOf(colored)))
-      const texts = textsOf(await ui.find({ key: 'issue-15' }))
-      const split = texts.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
-      const hoverOf = (content: string) => (texts.find((node) => node.children?.[0] === content) as { hover?: unknown } | undefined)?.hover
-      expect(hoverOf('◯')).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.success })
-      expect(hoverOf('fix')).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
-      expect((texts[split] as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
-      for (const node of texts.slice(split + 1)) expect((node as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_BG })
-      const rows = (await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))
-      expect(rows.map((box) => String(box.key))).toEqual(['row-issue-15'])
-      const [box] = rows
-      expect((box?.children ?? []).map((child) => (child as { type?: string }).type)).toEqual(['Button'])
+      expect((await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))).toEqual([])
+      for (const entry of textsIn(await ui.drawn())) expect(entry).not.toHaveProperty('hover')
+      expect(await ui.findAll({ type: 'Button' })).toContainEqual(expect.objectContaining({ key: 'issue-15' }))
       await ui.unmount()
     })
   })
@@ -319,7 +302,7 @@ describe('renderIssues fits the width', () => {
     )
     for (const columns of [10, 20, 40, 80, 120, 160]) {
       for (const surface of SURFACES) {
-        const ui = await show(rig, $, surface, viewOf(listOf([...heavy, ...crowd()]), { columns, focusedKey: 'issue-5001' }))
+        const ui = await show(rig, $, surface, viewOf(listOf([...heavy, ...crowd()]), { columns }))
         for (const line of await linesOf(ui)) expect(cellWidth(line)).toBeLessThanOrEqual(Math.max(columns, 10))
         await ui.unmount()
       }

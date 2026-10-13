@@ -1462,9 +1462,8 @@ describe('the list entry points', () => {
     }
   })
 
-  test('the PR header title (picked: pr-N, branch: pr-anchor) is calm: pre-swapped on the ring, normal plus hover otherwise, alone in a head- Box', async ($, on) => {
+  test('the PR header title (picked: pr-N, branch: pr-anchor) is a plain Button around one monochrome Text, no swap, no hover, no head- Box', async ($, on) => {
     const rig = createRig(on)
-    const swapped = { color: '#30363d', backgroundColor: '#e6edf3' }
     type Piece = { props?: Record<string, unknown>; hover?: unknown }
     const cases = [
       { isSelected: true, key: 'pr-42' },
@@ -1472,20 +1471,15 @@ describe('the list entry points', () => {
     ]
     for (const { isSelected, key } of cases) {
       const base = { ...prView({ number: 42, title: 'Calm title', checks: [makeCheck()] }, 80), isSelected }
-      const ringed = await rig.pane($, 'terminal', { ...base, focusedKey: key }, handlersFor([], { back: () => {}, openList: () => {} }))
-      const on1 = (await ringed.find({ key })) as { props: Record<string, unknown>; children: Piece[] }
-      expect(on1.props.label).toContain('#42 Calm title')
-      expect(on1.children).toHaveLength(1)
-      expect(on1.children[0]?.props).toMatchObject(swapped)
-      expect(on1.children[0]?.hover).toEqual(swapped)
-      const box = (await ringed.find({ key: `head-${key}` })) as { type: string; children: { type: string }[] }
-      expect(box.children.map((child) => child.type)).toEqual(['Button'])
-      await ringed.unmount()
-      const rest = await rig.pane($, 'terminal', { ...base, focusedKey: 'refresh' }, handlersFor([], { back: () => {}, openList: () => {} }))
-      const off = (await rest.find({ key })) as { children: Piece[] }
-      expect(off.children[0]?.props?.color).toBeUndefined()
-      expect(off.children[0]?.hover).toEqual(swapped)
-      await rest.unmount()
+      const ui = await rig.pane($, 'terminal', base, handlersFor([], { back: () => {}, openList: () => {} }))
+      const button = (await ui.find({ key })) as { props: Record<string, unknown>; children: Piece[] }
+      expect(button.props.label).toContain('#42 Calm title')
+      expect(button.children).toHaveLength(1)
+      expect(button.children[0]?.props?.color).toBeUndefined()
+      expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
+      expect(button.children[0]).not.toHaveProperty('hover')
+      expect(await ui.find({ key: `head-${key}` })).toBeUndefined()
+      await ui.unmount()
     }
   })
 

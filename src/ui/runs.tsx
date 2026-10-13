@@ -1,6 +1,6 @@
 // The Actions tab: the newest run per workflow on the default branch, on this branch, then
 // recent runs of others, one page at a time. A run takes two lines and a blank one: the title
-// line (state symbol, workflow name, branch) and a dim line of facts, together one Button.
+// line (state symbol, workflow name, branch) and a dim line of facts, the title is the Button.
 
 import type { RenderElement } from 'claude-code'
 
@@ -67,15 +67,13 @@ function runRow(table: UiTable, view: RunsView, handlers: RepoHandlers, item: Ru
   const hasBranch = wantsBranch && branchRoom >= BRANCH_FLOOR
   const branch = hasBranch && item.branch !== null ? truncate(item.branch, branchRoom) : ''
   const name = truncate(item.name, Math.max(1, room - (hasBranch ? GAP_WIDTH + cellWidth(branch) : 0)))
-  const first: Run[] = [stateRun(item.state), { text: ' ' }, { text: name, isBold: true }]
-  if (hasBranch) first.push({ text: GAP }, { text: branch, isDim: true })
   return listRow(table, view.palette, {
     key,
-    rowKey: `row-${key}`,
     label: `#${item.runNumber} ${item.name}`,
-    isFocused: view.focusedKey === key,
     columns,
-    first,
+    symbol: stateRun(item.state),
+    title: { text: name, isBold: true },
+    after: hasBranch ? [{ text: GAP }, { text: branch, isDim: true }] : [],
     facts: factRuns(item, view.nowMs),
     onPress: () => handlers.selectRun(item.id),
   })

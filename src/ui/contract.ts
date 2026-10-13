@@ -36,8 +36,6 @@ export type View = {
   counts?: ListCounts | null
   /** The default branch's failing workflows for the band; null or absent hides the segment (also when the `mainStatus` option is off). */
   mainStatus?: MainStatus | null
-  /** The key of the pane Button that holds the focus ring; null or absent when unknown. */
-  focusedKey?: string | null
 }
 
 /** What the list view draws from. */
@@ -48,8 +46,6 @@ export type ListView = {
   /** Items per page; PAGE_SIZE when absent. */
   pageSize?: number
   hideDrafts: boolean
-  /** The key of the Button that holds the focus ring (`pr-<n>`); null until it is known. */
-  focusedKey: string | null
   counts: ListCounts | null
   nowMs: number
   columns: number
@@ -129,8 +125,6 @@ export type TabsView = {
   /** True while a confirmation waits: the tab row is then drawn without buttons, so nothing moves away from it. */
   isLocked: boolean
   palette: Palette
-  /** The key of the pane Button that holds the focus ring; the tab Button holding it is drawn calm. */
-  focusedKey?: string | null
 }
 
 /** What the Issues list draws from. */
@@ -139,7 +133,6 @@ export type IssuesView = {
   page: number
   /** Items per page; PAGE_SIZE when absent. */
   pageSize?: number
-  focusedKey: string | null
   /** The viewer's login, for the groups. */
   viewer: string
   nowMs: number
@@ -154,7 +147,6 @@ export type RunsView = {
   page: number
   /** Items per page; PAGE_SIZE when absent. */
   pageSize?: number
-  focusedKey: string | null
   nowMs: number
   columns: number
   surface?: 'terminal' | 'desktop'
@@ -164,8 +156,6 @@ export type RunsView = {
 /** What an issue's detail draws from. */
 export type IssueDetailView = {
   snapshot: IssueSnapshot
-  /** The key of the pane Button that holds the focus ring (`issue-<n>` for the header title). */
-  focusedKey?: string | null
   nowMs: number
   columns: number
   surface?: 'terminal' | 'desktop'
@@ -175,8 +165,6 @@ export type IssueDetailView = {
 /** What a run's detail draws from. */
 export type RunDetailView = {
   snapshot: RunSnapshot
-  /** The key of the pane Button that holds the focus ring (`run-<id>` for the header title). */
-  focusedKey?: string | null
   /** Result of the last rerun from this view; null when none ran. */
   outcome: ActionOutcome | null
   nowMs: number

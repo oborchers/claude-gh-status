@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `/gh` opens the pane with the keyboard, so `1`, `2` and `3` work at once.
 - List pages fit the height of the pane, so Up and Down move item by item.
-- The run and issue detail titles and the tab row keep a calm highlight when focused.
+- List rows highlight only the title when selected, in the terminal's own selection style; status symbol, labels and facts keep their colors. This replaces the 0.2.1 two-line highlight, which flickered and showed wrong colors when the pane lost the keyboard. The detail titles and the tab names are highlighted the same way, and the counts and symbols of the tab row stay outside the highlight.
 - Text from GitHub is stripped of terminal control characters.
 - Links to other repositories are shown, not opened.
 - The pane always shows the tab row; the list and the detail of a pull request are levels of the PRs tab.
