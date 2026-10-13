@@ -18,6 +18,7 @@ import {
   paginateRuns,
   runAfter,
   runDelayMs,
+  runReference,
   runRowCount,
   runsAfter,
   runsProblemOf,
@@ -552,5 +553,54 @@ describe('fetchRun and runAfter', () => {
   test('a low rate limit raises the delay to five minutes', () => {
     expect(runDelayMs(loaded('running'), { remaining: 100, resetAt: AT })).toBe(300_000)
     expect(runDelayMs(loaded('running'), { remaining: 4000, resetAt: AT })).toBe(15_000)
+  })
+})
+
+describe('runReference', () => {
+  const job = (extra: Partial<JobDetail> = {}): JobDetail => ({ jobId: 91, runId: 5, name: 'unit tests', state: 'failure', currentStep: null, failedStep: 'Run  go test', url: null, ...extra })
+  const snapshot = (extra: Partial<RunItem> = {}, jobs: JobDetail[] = [job(), job({ jobId: 92, name: 'lint', state: 'success', failedStep: null })]): RunSnapshot => ({
+    kind: 'run',
+    at: AT,
+    location,
+    account,
+    run: run(5, { name: 'CI', branch: 'feature', state: 'failure', url: 'https://github.com/acme/app/actions/runs/5', headSha: 'abc123', ...extra }),
+    jobs,
+    stale: null,
+  })
+
+  test('names the workflow, branch, commit, run url and id, and each failed job with its id and failed step', () => {
+    expect(runReference(snapshot())).toBe(
+      [
+        'CI failed in workflow "CI" on acme/app (run 5, https://github.com/acme/app/actions/runs/5)',
+        'Branch: feature',
+        'Commit: abc123',
+        'Failed jobs:',
+        '- unit tests: failure, job 91, failed step "Run go test"',
+        '  gh run view 5 --log-failed -R acme/app',
+        'Please investigate this failure and fix it.',
+      ].join('\n'),
+    )
+  })
+
+  test('leaves out passed jobs', () => {
+    expect(runReference(snapshot()) ?? '').not.toContain('lint')
+  })
+
+  test('a failed run without job details still gets a reference; a passed run without failed jobs gets none', () => {
+    expect(runReference(snapshot({}, []))).toContain('CI failed in workflow "CI"')
+    expect(runReference(snapshot({}, []))).not.toContain('Failed jobs:')
+    expect(runReference(snapshot({ state: 'success' }, [job({ state: 'success', failedStep: null })]))).toBeNull()
+  })
+
+  test('a run that passed overall but has a failed job is referenced', () => {
+    expect(runReference(snapshot({ state: 'success' }))).toContain('- unit tests: failure, job 91')
+  })
+
+  test('no branch and no commit are left out; loading and error snapshots give null', () => {
+    const text = runReference(snapshot({ branch: null, headSha: '' })) ?? ''
+    expect(text).not.toContain('Branch:')
+    expect(text).not.toContain('Commit:')
+    expect(runReference({ kind: 'loading', at: AT, runId: 5 })).toBeNull()
+    expect(runReference({ kind: 'error', at: AT, runId: 5, message: 'x' })).toBeNull()
   })
 })

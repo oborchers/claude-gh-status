@@ -10,9 +10,11 @@ import { parseAccountConfig, resolveAccount } from '../src/accounts'
 import type { AccountMemory } from '../src/accounts'
 import { readLocation } from '../src/git'
 import { fetchJobs } from '../src/jobs'
-import { COUNTS_POLL_MS, COUNTS_RETRY_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount, pollDelayMs } from '../src/list'
-import type { AccountChoice, ListCounts, MergeMethod, PendingAction, PrList, RateLimit, RepoLocation, Snapshot } from '../src/model'
+import { fetchIssue, fetchIssues, issueAfter, issueProblemOf, issueRowCount, issuesAfter, issuesProblemOf, lastIssuePage } from '../src/issues'
+import { COUNTS_POLL_MS, COUNTS_RETRY_MS, LIST_POLL_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount, pollDelayMs } from '../src/list'
+import type { AccountChoice, IssueList, IssueSnapshot, ListCounts, MainStatus, MergeMethod, PaneTab, PendingAction, PrList, RateLimit, RepoLocation, RunList, RunSnapshot, Snapshot, TabState } from '../src/model'
 import { fetchPullRequest, fetchPullRequestByNumber } from '../src/query'
+import { MAIN_STATUS_POLL_MS, fetchMainStatus, fetchRun, fetchRuns, lastRunPage, runAfter, runDelayMs, runProblemOf, runReference, runRowCount, runsAfter, runsProblemOf } from '../src/runs'
 import { createRefresher, etagsOf, mergeEtags, nextDelayMs } from '../src/scheduler'
 import type { RefreshReason, RefreshTarget, RefresherDeps, SchedulerConfig } from '../src/scheduler'
 import { deriveStatus } from '../src/status'
@@ -21,14 +23,26 @@ import { confirmTitle } from '../src/ui/confirm'
 import { paletteFor } from '../src/ui/colors'
 import type { Palette } from '../src/ui/colors'
 import { count } from '../src/ui/format'
+import { renderIssueDetail } from '../src/ui/issue-detail'
+import { renderIssues } from '../src/ui/issues'
 import { renderList } from '../src/ui/list'
 import { paneRowCount, renderPane } from '../src/ui/pane'
-import type { Handlers, ListHandlers, ListView, UiTable, View } from '../src/ui/contract'
+import { renderRunDetail } from '../src/ui/run-detail'
+import { renderRuns } from '../src/ui/runs'
+import { renderTabs } from '../src/ui/tabs'
+import type { Handlers, IssueDetailView, IssuesView, ListHandlers, ListView, RepoHandlers, RunDetailView, RunsView, TabsView, UiTable, View } from '../src/ui/contract'
 
 const PANE_ID = 'gh-status'
 const PANE_TITLE = 'PR'
 /** Width the opening row count is estimated at; button wrapping is the only thing it changes. */
 const PANE_ROWS_COLUMNS = 80
+
+/** The tab row every view of the pane draws first. */
+const TAB_ROW = 1
+
+/** Rows asked for an issue's or run's detail: the body is long, the engine clamps and the person can drag. */
+const ISSUE_DETAIL_ROWS = 30
+const RUN_DETAIL_ROWS = 24
 
 const DEFAULT_FAST_SECONDS = 5
 const DEFAULT_IDLE_SECONDS = 30
@@ -39,10 +53,14 @@ const CHANGING_COMMAND = /\bgit\s+(push|pull|checkout|switch|rebase|merge|commit
 const DEFAULT_COMMAND = 'pr'
 /** The name that is always registered, so the mod stays reachable when the configured one is taken. */
 const FALLBACK_COMMAND = 'gh-pr'
+/** Registered as well when free: one command for the PRs, Issues and Actions tabs. */
+const EXTRA_COMMAND = 'gh'
 const COMMAND_NAME = /^[a-z0-9-]{1,32}$/
 const PLUGIN_NAME = 'gh-status'
 
-const usageFor = (name: string): string => `Usage: /${name} [<number> | list (ls) | back (to the list) | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x) | approve | changes | ready]`
+const ARGUMENT_HINT = '<number> | prs | issues (i) | actions (ac) | issue <n> | run <id> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)'
+
+const usageFor = (name: string): string => `Usage: /${name} [<number> (a pull request or an issue) | prs | issues (i) | actions (ac) | issue <n> | run <id> | list (ls) | back (up one level) | refresh | open | close | copy | fix | rerun (rr) | merge (m) | queue (q) | dequeue (dq) | auto (a) | admin (x) | approve | changes | ready]`
 
 /** The configured command name, or 'pr' when it is not 1 to 32 characters of a-z, 0-9 and '-'. */
 function commandNameOf(value: unknown): string {
@@ -84,17 +102,38 @@ const listHideDraftsState = atom({ plugin: 'gh-status', key: 'listHideDrafts' } 
 const countsState = atom({ plugin: 'gh-status', key: 'counts' } as const, null)
 const paneViewState = atom({ plugin: 'gh-status', key: 'paneView' } as const, 'detail')
 const paneFocusState = atom({ plugin: 'gh-status', key: 'paneFocus' } as const, null)
+const FRESH_TAB: TabState = { level: 'list', page: 0, focus: null, selected: null }
+const paneTabState = atom({ plugin: 'gh-status', key: 'paneTab' } as const, 'prs')
+const issuesTabState = atom({ plugin: 'gh-status', key: 'issuesTab' } as const, FRESH_TAB)
+const actionsTabState = atom({ plugin: 'gh-status', key: 'actionsTab' } as const, FRESH_TAB)
+const issuesState = atom({ plugin: 'gh-status', key: 'issues' } as const, null)
+const issueSnapshotState = atom({ plugin: 'gh-status', key: 'issueSnapshot' } as const, null)
+const runsState = atom({ plugin: 'gh-status', key: 'runs' } as const, null)
+const runSnapshotState = atom({ plugin: 'gh-status', key: 'runSnapshot' } as const, null)
+const mainStatusState = atom({ plugin: 'gh-status', key: 'mainStatus' } as const, null)
 
 /**
  * The timers of the running session, at module scope: a second session.start (hot reload,
  * resume) cancels the first one's before it builds its own, so timers never multiply.
  * `generation` lets the flights of an older start notice they must not re-arm anything.
  */
-const timers: { branch: Timer | null; list: Timer | null; counts: Timer | null } = { branch: null, list: null, counts: null }
+/** Options the render hooks read; set by register. */
+const settings = { isMainShown: true }
+
+const timers: { branch: Timer | null; list: Timer | null; counts: Timer | null; tab: Timer | null; main: Timer | null } = { branch: null, list: null, counts: null, tab: null, main: null }
 let generation = 0
 
+/** The repository (lowercase `owner/repo`) the Issues and Actions data was read for; a change of repository resets them. */
+let tabsRepo: string | null = null
+
+/** The etag of the last main-branch read and the repository it belongs to. */
+const mainCache: { repo: string | null; etag: string | null } = { repo: null, etag: null }
+
+/** What the PR views call to stop the Issues and Actions polling; set by session.start. */
+const controls = { stopTab: (): void => {} }
+
 function cancelTimers(): void {
-  for (const key of ['branch', 'list', 'counts'] as const) {
+  for (const key of ['branch', 'list', 'counts', 'tab', 'main'] as const) {
     timers[key]?.cancel()
     timers[key] = null
   }
@@ -119,6 +158,12 @@ type Live = {
   stopList(): void
   /** The directory changed: refreshes the branch's pull request, the counts and, while the pane shows the list, the list. */
   cwdChanged(): Promise<void>
+  /** Polls what the pane shows now: the Issues or Actions list or detail (read at once), nothing for the PRs tab. */
+  syncTab(): Promise<void>
+  /** Reads what the Issues or Actions tab shows now, outside its rhythm. */
+  refreshTab(): Promise<void>
+  /** Whether a number is a pull request or an issue of the repository; GitHub numbers both together. */
+  kindOfNumber(number: number): Promise<'pr' | 'issue'>
 }
 
 /** Which pull request a handler acts on: the branch's (the band) or the one the pane shows (the picked one, else the branch's). */
@@ -189,7 +234,8 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   // With a pick set, a confirmation shows only where its pull request is shown.
   const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
   const counts = await read($, countsState)
-  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts }
+  const mainStatus = settings.isMainShown ? await read($, mainStatusState) : null
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus }
 }
 
 async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<ListView> {
@@ -206,6 +252,65 @@ async function readListView($: EngineInterface, columns: number, surface: 'termi
   }
 }
 
+/** The tab row's data: the counts behind each name, the worst main-branch state, locked while a confirmation waits. */
+async function readTabsView($: EngineInterface, palette: Palette): Promise<TabsView> {
+  const counts = await read($, countsState)
+  const list = await read($, listState)
+  const main = settings.isMainShown ? await read($, mainStatusState) : null
+  return {
+    tab: await read($, paneTabState),
+    prCount: counts !== null ? counts.open : list !== null && list.kind === 'list' ? list.total : null,
+    issueCount: counts?.issues ?? null,
+    mainWorst: main === null ? null : main.worst,
+    isLocked: (await read($, pendingState)) !== null,
+    palette,
+  }
+}
+
+/** The number an issue snapshot is about. */
+const issueNumberOf = (snapshot: IssueSnapshot): number => (snapshot.kind === 'issue' ? snapshot.issue.number : snapshot.number)
+
+/** The id of the run a run snapshot is about. */
+const runIdOf = (snapshot: RunSnapshot): number => (snapshot.kind === 'run' ? snapshot.run.id : snapshot.runId)
+
+/** What the active tab draws below the tab row. */
+async function readTabBody($: EngineInterface, table: UiTable, columns: number, surface: 'terminal' | 'desktop', palette: Palette, live: Live | null): Promise<RenderElement> {
+  const tab = await read($, paneTabState)
+  const nowMs = await $.clock.now()
+  if (tab === 'prs') {
+    if ((await read($, paneViewState)) === 'list') {
+      const listView = await readListView($, columns, surface, palette)
+      return renderList(table, listView, listHandlersFor($, live))
+    }
+    const view = await readView($, columns, surface, palette, 'pane')
+    return renderPane(table, view, handlersFor($, live, surface, 'pane'))
+  }
+  const handlers = repoHandlersFor($, live, surface)
+  if (tab === 'issues') {
+    const state = await read($, issuesTabState)
+    if (state.level === 'list' || state.selected === null) {
+      const issues = await read($, issuesState)
+      const branch = await read($, snapshotState)
+      const viewer = issues !== null && issues.kind === 'list' ? issues.account.login : 'account' in branch ? branch.account.login : ''
+      const view: IssuesView = { issues, page: state.page, focusedKey: state.focus, viewer, nowMs, columns, surface, palette }
+      return renderIssues(table, view, handlers)
+    }
+    const stored = await read($, issueSnapshotState)
+    const snapshot: IssueSnapshot = stored !== null && issueNumberOf(stored) === state.selected ? stored : { kind: 'loading', at: '', number: state.selected }
+    const view: IssueDetailView = { snapshot, nowMs, columns, surface, palette }
+    return renderIssueDetail(table, view, handlers)
+  }
+  const state = await read($, actionsTabState)
+  if (state.level === 'list' || state.selected === null) {
+    const view: RunsView = { runs: await read($, runsState), page: state.page, focusedKey: state.focus, nowMs, columns, surface, palette }
+    return renderRuns(table, view, handlers)
+  }
+  const stored = await read($, runSnapshotState)
+  const snapshot: RunSnapshot = stored !== null && runIdOf(stored) === state.selected ? stored : { kind: 'loading', at: '', runId: state.selected }
+  const view: RunDetailView = { snapshot, outcome: null, nowMs, columns, surface, palette }
+  return renderRunDetail(table, view, handlers)
+}
+
 async function openUrl($: EngineInterface, url: string): Promise<void> {
   if (!/^https:\/\//.test(url)) return
   for (const opener of ['open', 'xdg-open']) {
@@ -220,12 +325,14 @@ async function openUrl($: EngineInterface, url: string): Promise<void> {
 
 /** Opens the pane on its detail view, with the keyboard when asked (granted from an empty prompt). */
 async function showPane($: EngineInterface, isFocused: boolean): Promise<UiOpenResult> {
+  controls.stopTab()
+  await update($, paneTabState, () => 'prs')
   await update($, paneViewState, () => 'detail')
   const { snapshot } = await subjectSnapshot($, 'pane')
   // Docked, the pane takes the height of the screen; inline it would get a third and cut off,
   // so ask for what the content needs. A size the person dragged still wins (engine).
   const view = await readView($, PANE_ROWS_COLUMNS, 'terminal', paletteFor(undefined), 'pane')
-  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: paneRowCount(view), ...(isFocused ? { focus: true } : {}) })
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: TAB_ROW + paneRowCount(view, { openRun: () => undefined }), ...(isFocused ? { focus: true } : {}) })
   if (snapshot.kind === 'pr') {
     const nowMs = await $.clock.now()
     await update($, lastSeenState, seen => ({ ...seen, [seenKey(snapshot)]: new Date(nowMs).toISOString() }))
@@ -424,6 +531,18 @@ async function currentRepo($: EngineInterface): Promise<string | null> {
  * before: all three are dropped. `slug` is the lowercase `owner/repo` now, or null when there is none.
  */
 async function dropIfRepoChanged($: EngineInterface, slug: string | null): Promise<void> {
+  if (tabsRepo !== null && tabsRepo !== (slug ?? '')) {
+    tabsRepo = null
+    mainCache.repo = null
+    mainCache.etag = null
+    await update($, issuesTabState, () => FRESH_TAB)
+    await update($, actionsTabState, () => FRESH_TAB)
+    await update($, issuesState, () => null)
+    await update($, issueSnapshotState, () => null)
+    await update($, runsState, () => null)
+    await update($, runSnapshotState, () => null)
+    await update($, mainStatusState, () => null)
+  }
   const selected = await read($, selectedState)
   const pending = await read($, pendingState)
   const isChanged = (repo: string): boolean => repo !== (slug ?? '')
@@ -488,8 +607,10 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
 
 /** Switches the pane to its list view, with the keyboard when asked, sized to its current page, and reads the list now. */
 async function showList($: EngineInterface, live: Live | null, isFocused: boolean): Promise<UiOpenResult> {
+  controls.stopTab()
+  await update($, paneTabState, () => 'prs')
   await update($, paneViewState, () => 'list')
-  const rows = listRowCount(await read($, listState), await read($, listPageState), await read($, listHideDraftsState))
+  const rows = TAB_ROW + listRowCount(await read($, listState), await read($, listPageState), await read($, listHideDraftsState))
   const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...(isFocused ? { focus: true } : {}) })
   if (live !== null) void live.runList()
   return opened
@@ -523,6 +644,190 @@ function listHandlersFor($: EngineInterface, live: Live | null): ListHandlers {
     },
     closePane: () => void closePane($),
     openUrl: url => void openUrl($, url),
+  }
+}
+
+/** Whether a confirmation waits: then no tab switch or cross link may move away from it. */
+async function isConfirming($: EngineInterface): Promise<boolean> {
+  return (await read($, pendingState)) !== null
+}
+
+function readTabState($: EngineInterface, tab: 'issues' | 'actions'): Promise<TabState> {
+  return tab === 'issues' ? read($, issuesTabState) : read($, actionsTabState)
+}
+
+async function patchTabState($: EngineInterface, tab: 'issues' | 'actions', patch: (state: TabState) => TabState): Promise<void> {
+  if (tab === 'issues') await update($, issuesTabState, patch)
+  else await update($, actionsTabState, patch)
+}
+
+/** Rows the view of an Issues or Actions tab needs, without the tab row. */
+async function tabViewRows($: EngineInterface, tab: 'issues' | 'actions'): Promise<number> {
+  const state = await readTabState($, tab)
+  if (tab === 'issues') return state.level === 'list' ? issueRowCount(await read($, issuesState), state.page) : ISSUE_DETAIL_ROWS
+  return state.level === 'list' ? runRowCount(await read($, runsState), state.page) : RUN_DETAIL_ROWS
+}
+
+/**
+ * Puts the focus ring where the tab was left: the remembered row in a list, the tab's own
+ * button in a detail. A request: where the engine refuses it (no keyboard, or `claude plugin
+ * test`) the ring stays where it is.
+ */
+async function restoreFocus($: EngineInterface, tab: PaneTab): Promise<void> {
+  let key: string | null
+  if (tab === 'prs') {
+    const focus = await read($, paneFocusState)
+    key = (await read($, paneViewState)) === 'list' ? (focus !== null && focus.startsWith('pr-') ? focus : null) : 'tab-prs'
+  } else {
+    const state = await readTabState($, tab)
+    key = state.level === 'list' ? state.focus : `tab-${tab}`
+  }
+  if (key === null) return
+  try {
+    await $.ui.focus({ requestId: PANE_ID, key })
+  } catch {
+    // the ring stays where the engine put it
+  }
+}
+
+/** Opens the pane on what the active tab shows, sized to it, and starts the poll that view needs. */
+async function showTabView($: EngineInterface, live: Live | null, isFocused: boolean): Promise<UiOpenResult> {
+  const tab = await read($, paneTabState)
+  if (tab === 'prs') {
+    if ((await read($, paneViewState)) === 'list') return await showList($, live, isFocused)
+    const opened = await showPane($, isFocused)
+    if (live !== null) void live.run('command')
+    return opened
+  }
+  if (live !== null) live.stopList()
+  const rows = TAB_ROW + (await tabViewRows($, tab))
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...(isFocused ? { focus: true } : {}) })
+  if (live !== null) void live.syncTab()
+  return opened
+}
+
+/**
+ * Makes `tab` the active one, applies `patch` to its state, shows it and, when asked,
+ * puts the ring where that tab was left. Each tab keeps its own level, page and row.
+ */
+async function enterTab($: EngineInterface, live: Live | null, tab: PaneTab, patch: ((state: TabState) => TabState) | null, isFocused: boolean, isRestoringFocus: boolean): Promise<UiOpenResult> {
+  await update($, paneTabState, () => tab)
+  if (patch !== null && tab !== 'prs') await patchTabState($, tab, patch)
+  const opened = await showTabView($, live, isFocused)
+  if (isRestoringFocus) await restoreFocus($, tab)
+  return opened
+}
+
+/** The tab row's hotkeys 1, 2 and 3. Does nothing while a confirmation waits, so it never ends up in another tab. */
+async function showTab($: EngineInterface, live: Live | null, tab: PaneTab): Promise<void> {
+  if (await isConfirming($)) return
+  if ((await read($, paneTabState)) === tab) return
+  await enterTab($, live, tab, null, false, true)
+}
+
+const WAITING = 'A confirmation is waiting, answer it first.'
+
+/** Shows an issue in the Issues tab; the detail is read at once. */
+async function openIssue($: EngineInterface, live: Live | null, number: number, isFromCommand: boolean): Promise<string> {
+  if (!Number.isSafeInteger(number) || number < 1) return `${number} is not an issue number.`
+  if (await isConfirming($)) return WAITING
+  await update($, issueSnapshotState, () => null)
+  const opened = await enterTab($, live, 'issues', state => ({ ...state, level: 'detail', selected: number, focus: `issue-${number}` }), isFromCommand, !isFromCommand)
+  return opened.isPlaced ? `Showing issue #${number} in the pane.` : `Issue #${number} selected but the pane is not drawn yet: ${opened.reason}`
+}
+
+/** Shows a workflow run in the Actions tab; the detail is read at once. */
+async function openRun($: EngineInterface, live: Live | null, runId: number, isFromCommand: boolean): Promise<string> {
+  if (!Number.isSafeInteger(runId) || runId < 1) return `${runId} is not a run id.`
+  if (await isConfirming($)) return WAITING
+  await update($, runSnapshotState, () => null)
+  const opened = await enterTab($, live, 'actions', state => ({ ...state, level: 'detail', selected: runId, focus: `run-${runId}` }), isFromCommand, !isFromCommand)
+  return opened.isPlaced ? `Showing run ${runId} in the pane.` : `Run ${runId} selected but the pane is not drawn yet: ${opened.reason}`
+}
+
+/** The Issues or Actions tab at the level it was left; the first time the list. */
+async function openTabCommand($: EngineInterface, live: Live | null, tab: 'issues' | 'actions'): Promise<string> {
+  if (await isConfirming($)) return WAITING
+  const opened = await enterTab($, live, tab, null, true, true)
+  const name = tab === 'issues' ? 'Issues' : 'Actions'
+  return opened.isPlaced ? `${name} shown in the pane.` : `${name} shown but the pane is not drawn yet: ${opened.reason}`
+}
+
+/** Up one level in the active tab: detail to list, the ring back on the row it was opened from. */
+async function tabBack($: EngineInterface, live: Live | null): Promise<boolean> {
+  const tab = await read($, paneTabState)
+  if (tab === 'prs') return false
+  const state = await readTabState($, tab)
+  if (state.level !== 'detail') return false
+  const prefix = tab === 'issues' ? 'issue-' : 'run-'
+  const key = state.selected === null ? state.focus : `${prefix}${state.selected}`
+  await patchTabState($, tab, current => ({ ...current, level: 'list', selected: null, focus: key }))
+  await showTabView($, live, false)
+  await restoreFocus($, tab)
+  return true
+}
+
+async function pageTab($: EngineInterface, step: 1 | -1): Promise<void> {
+  const tab = await read($, paneTabState)
+  if (tab === 'prs') return
+  const last = tab === 'issues' ? lastIssuePage(await read($, issuesState)) : lastRunPage(await read($, runsState))
+  await patchTabState($, tab, state => ({ ...state, page: Math.min(Math.max(state.page + step, 0), last), focus: null }))
+}
+
+/** Re-runs the failed jobs of the run the detail shows; no confirmation, like the pull request's `t`. */
+async function rerunRun($: EngineInterface, live: Live | null, runId: number): Promise<string> {
+  if (rerunGuard.isBusy) return 'A re-run is in progress, try again in a moment.'
+  rerunGuard.isBusy = true
+  try {
+    const snapshot = await read($, runSnapshotState)
+    if (snapshot === null || snapshot.kind !== 'run' || snapshot.run.id !== runId) return 'That run is not loaded.'
+    const exec: Exec = (argv, init) => $.process.run(argv, init)
+    const summary = await executeRerun(exec, snapshot.account.login, snapshot.location, [runId])
+    const label = `Run #${snapshot.run.runNumber} ${snapshot.run.name}`
+    const message = summary.ok.length > 0 ? `${label}: re-running failed jobs` : `${label}: could not re-run, ${summary.failed[0]?.message ?? 'gh failed'}`
+    await $.ui.toast(message)
+    if (summary.ok.length > 0 && live !== null) void live.refreshTab()
+    return message
+  } finally {
+    rerunGuard.isBusy = false
+  }
+}
+
+/** Puts a reference to the shown run's failed jobs into the prompt box. */
+async function runToClaude($: EngineInterface, runId: number): Promise<string> {
+  const snapshot = await read($, runSnapshotState)
+  if (snapshot === null || snapshot.kind !== 'run' || snapshot.run.id !== runId) return 'That run is not loaded.'
+  const text = runReference(snapshot)
+  if (text === null) return 'No failed jobs.'
+  const filled = await $.prompt.fill({ text, mode: 'insert' })
+  const message = filled.isFilled ? 'Failed run added to the prompt.' : 'The prompt could not take the failed run.'
+  await $.ui.toast(message)
+  return message
+}
+
+/** The handler closures of the tab row, the Issues and Actions views. None of them writes to GitHub but `rerunRun`, which re-runs CI. */
+function repoHandlersFor($: EngineInterface, live: Live | null, surface: RenderSurface | undefined): RepoHandlers {
+  return {
+    showTab: tab => void showTab($, live, tab),
+    selectIssue: number => void openIssue($, live, number, false),
+    selectRun: runId => void openRun($, live, runId, false),
+    openLinkedPr: number => {
+      void (async () => {
+        if (await isConfirming($)) return
+        await selectPr($, live, number)
+      })()
+    },
+    back: () => void tabBack($, live),
+    nextPage: () => void pageTab($, 1),
+    prevPage: () => void pageTab($, -1),
+    refresh: () => {
+      if (live !== null) void live.refreshTab()
+    },
+    closePane: () => void closePane($),
+    openUrl: url => void openUrl($, url),
+    copyText: text => void $.ui.copy({ text, surface }),
+    rerunRun: runId => void rerunRun($, live, runId),
+    ciToClaude: runId => void runToClaude($, runId),
   }
 }
 
@@ -595,6 +900,17 @@ function handlersFor($: EngineInterface, live: Live | null, surface: RenderSurfa
     selectPr: number => void selectPr($, live, number),
     back: () => void back($, live),
     openList: () => void openList($, live),
+    openActions: () => void (async () => {
+      if (await isConfirming($)) return
+      await enterTab($, live, 'actions', null, false, true)
+    })(),
+    // Only the pane's pipeline and Linked issues sections are buttons; the band has none of them.
+    ...(subject === 'pane'
+      ? {
+          openLinkedIssue: (number: number) => void openIssue($, live, number, false),
+          openRun: (runId: number) => void openRun($, live, runId, false),
+        }
+      : {}),
   }
 }
 
@@ -602,6 +918,7 @@ export const register: Register = (on, options) => {
   const config = configOf(options)
   const palette = paletteFor(options.colors)
   const configured = commandNameOf(options.command)
+  settings.isMainShown = !(typeof options.mainStatus === 'string' && options.mainStatus.trim().toLowerCase() === 'off')
   /** The names this mod answers to; set by session.start, empty before. */
   let activeNames: string[] = []
   /** Names this mod registered itself, so a second session.start (hot reload) does not read them as taken. */
@@ -613,6 +930,9 @@ export const register: Register = (on, options) => {
     // A second start (hot reload, resume) must not leave the first one's timers running next to its own.
     cancelTimers()
     generation += 1
+    tabsRepo = null
+    mainCache.repo = null
+    mainCache.etag = null
     const mine = generation
     const isCurrent = (): boolean => mine === generation
     try {
@@ -631,10 +951,12 @@ export const register: Register = (on, options) => {
     const isTaken = (name: string): boolean =>
       !ownNames.has(name) && taken.some(command => command.name === name && !(command.source === 'plugin' && (command.plugin === PLUGIN_NAME || command.plugin?.startsWith(`${PLUGIN_NAME}@`) === true)))
     const wanted = isTaken(configured) ? [FALLBACK_COMMAND] : [configured, FALLBACK_COMMAND]
+    // /gh is one more name for the same command; a taken one is skipped without a word.
+    const names = isTaken(EXTRA_COMMAND) ? wanted : [...wanted, EXTRA_COMMAND]
     const registeredNow: string[] = []
-    for (const name of [...new Set(wanted)]) {
+    for (const name of [...new Set(names)]) {
       try {
-        await $.command.register({ name, description: 'Show the pull request status of this branch', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
+        await $.command.register({ name, description: 'Show the pull request status of this branch, the issues and the Actions runs', argumentHint: ARGUMENT_HINT })
         registeredNow.push(name)
         ownNames.add(name)
       } catch {
@@ -809,7 +1131,7 @@ export const register: Register = (on, options) => {
     }
     const tickList = async (): Promise<void> => {
       // Read only while the pane is open and shows the list.
-      if (!(await $.ui.panes()).some(pane => pane.id === PANE_ID) || (await read($, paneViewState)) !== 'list') return stopList()
+      if (!(await $.ui.panes()).some(pane => pane.id === PANE_ID) || (await read($, paneViewState)) !== 'list' || (await read($, paneTabState)) !== 'prs') return stopList()
       await runList()
     }
 
@@ -852,21 +1174,209 @@ export const register: Register = (on, options) => {
       return flight
     }
 
+    // The Issues and Actions views poll only while they are the ones on screen: one timer, one
+    // kind at a time. Switching tab or level stops the old poll and reads the new view at once;
+    // the old data stays visible meanwhile. Each kind has its own single flight.
+    type TabPoll = 'issues' | 'issue' | 'runs' | 'run'
+    let tabPoll: TabPoll | null = null
+    const tabFlights: Partial<Record<TabPoll, Promise<void>>> = {}
+    const stopTab = (): void => {
+      tabPoll = null
+      if (isCurrent()) {
+        timers.tab?.cancel()
+        timers.tab = null
+      }
+    }
+    controls.stopTab = stopTab
+    const slugOf = (location: RepoLocation): string => (repoSlug(location) ?? '').toLowerCase()
+    /** Which view is on screen: an Issues or Actions list or detail; null for the PRs tab or a detail without a pick. */
+    const shownTabPoll = async (): Promise<TabPoll | null> => {
+      const tab = await read($, paneTabState)
+      if (tab === 'prs') return null
+      const state = await readTabState($, tab)
+      if (state.level === 'list') return tab === 'issues' ? 'issues' : 'runs'
+      if (state.selected === null) return null
+      return tab === 'issues' ? 'issue' : 'run'
+    }
+    const readTabOnce = async (kind: TabPoll): Promise<void> => {
+      const target = await repoTarget()
+      const at = new Date(await $.clock.now()).toISOString()
+      if (typeof target === 'string') {
+        if (kind === 'issues') await update($, issuesState, () => ({ kind: 'error', at, message: target }) as IssueList)
+        if (kind === 'runs') await update($, runsState, () => ({ kind: 'error', at, message: target }) as RunList)
+        if (kind === 'issue') {
+          const number = (await read($, issuesTabState)).selected
+          if (number !== null) await update($, issueSnapshotState, () => ({ kind: 'error', at, number, message: target }) as IssueSnapshot)
+        }
+        if (kind === 'run') {
+          const runId = (await read($, actionsTabState)).selected
+          if (runId !== null) await update($, runSnapshotState, () => ({ kind: 'error', at, runId, message: target }) as RunSnapshot)
+        }
+        return
+      }
+      const { location, account } = target
+      tabsRepo = slugOf(location)
+      const saveRate = async (rateLimit: RateLimit | null): Promise<void> => {
+        if (rateLimit !== null) await update($, rateLimitState, () => rateLimit)
+      }
+      if (kind === 'issues') {
+        const fetched = await fetchIssues(exec, location, account.login)
+        await update($, issuesState, (current: IssueList | null) => issuesAfter(current, fetched, at, location, account))
+        if (fetched.kind === 'ok') await saveRate(fetched.rateLimit)
+      } else if (kind === 'issue') {
+        const number = (await read($, issuesTabState)).selected
+        if (number === null) return
+        const fetched = await fetchIssue(exec, location, account.login, number)
+        await update($, issueSnapshotState, (current: IssueSnapshot | null) => issueAfter(current, fetched, at, location, account))
+        if (fetched.kind === 'ok') await saveRate(fetched.rateLimit)
+      } else if (kind === 'runs') {
+        const known = await read($, runsState)
+        const knownDefault = known !== null && known.kind === 'list' ? known.defaultBranch : ((await read($, mainStatusState))?.defaultBranch ?? null)
+        const fetched = await fetchRuns(exec, location, account.login, knownDefault)
+        await update($, runsState, (current: RunList | null) => runsAfter(current, fetched, at, location, account))
+      } else {
+        const runId = (await read($, actionsTabState)).selected
+        if (runId === null) return
+        const fetched = await fetchRun(exec, location, account.login, runId)
+        await update($, runSnapshotState, (current: RunSnapshot | null) => runAfter(current, fetched, at, location, account, runId))
+      }
+    }
+    const tabDelay = async (kind: TabPoll): Promise<number> => {
+      const rateLimit = await read($, rateLimitState)
+      if (kind === 'issues') return pollDelayMs(issuesProblemOf(await read($, issuesState))?.retryInMs ?? LIST_POLL_MS, rateLimit)
+      if (kind === 'issue') return pollDelayMs(issueProblemOf(await read($, issueSnapshotState))?.retryInMs ?? LIST_POLL_MS, rateLimit)
+      if (kind === 'runs') return pollDelayMs(runsProblemOf(await read($, runsState))?.retryInMs ?? LIST_POLL_MS, rateLimit)
+      return runDelayMs(await read($, runSnapshotState), rateLimit)
+    }
+    const runTab = (kind: TabPoll): Promise<void> => {
+      tabPoll = kind
+      const running = tabFlights[kind]
+      if (running !== undefined) return running
+      const flight = (async (): Promise<void> => {
+        try {
+          await readTabOnce(kind)
+        } catch (error) {
+          const message = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+          const at = new Date(await $.clock.now()).toISOString()
+          if (kind === 'issues') await update($, issuesState, (current: IssueList | null) => current ?? ({ kind: 'error', at, message } as IssueList))
+          if (kind === 'runs') await update($, runsState, (current: RunList | null) => current ?? ({ kind: 'error', at, message } as RunList))
+        } finally {
+          delete tabFlights[kind]
+        }
+        if (!isCurrent() || tabPoll !== kind) return
+        timers.tab?.cancel()
+        timers.tab = null
+        const delay = await tabDelay(kind)
+        if (!isCurrent() || tabPoll !== kind) return
+        timers.tab = $.clock.after(delay, () => void tickTab(kind))
+      })()
+      tabFlights[kind] = flight
+      return flight
+    }
+    const tickTab = async (kind: TabPoll): Promise<void> => {
+      // Read only while the pane is open and still shows this view.
+      if (!(await $.ui.panes()).some(pane => pane.id === PANE_ID) || (await shownTabPoll()) !== kind) return stopTab()
+      await runTab(kind)
+    }
+    const syncTab = async (): Promise<void> => {
+      const kind = await shownTabPoll()
+      if (kind === null) return stopTab()
+      timers.tab?.cancel()
+      timers.tab = null
+      await runTab(kind)
+    }
+    const refreshTab = async (): Promise<void> => {
+      const kind = await shownTabPoll()
+      if (kind !== null) await runTab(kind)
+    }
+
+    // The default branch's failing workflows, for the band: one conditional read every five minutes.
+    let mainFlight: Promise<void> | null = null
+    const runMain = (): Promise<void> => {
+      if (!settings.isMainShown) return Promise.resolve()
+      if (mainFlight !== null) return mainFlight
+      const flight = (async (): Promise<void> => {
+        let delay = MAIN_STATUS_POLL_MS
+        try {
+          const target = await repoTarget()
+          if (typeof target === 'string') {
+            await update($, mainStatusState, () => null)
+          } else {
+            const slug = slugOf(target.location)
+            tabsRepo = slug
+            const current: MainStatus | null = await read($, mainStatusState)
+            const isKnown = current !== null && mainCache.repo === slug
+            const nowMs = await $.clock.now()
+            const fetched = await fetchMainStatus(exec, target.location, target.account.login, isKnown ? mainCache.etag : null, isKnown ? current.defaultBranch : null, () => new Date(nowMs).toISOString())
+            if (fetched.kind === 'ok') {
+              const status: MainStatus = fetched.status
+              await update($, mainStatusState, () => status)
+              mainCache.repo = slug
+              mainCache.etag = fetched.etag
+            } else if (fetched.kind === 'error') {
+              // keep the last status and try again, never faster than once a minute
+              delay = COUNTS_RETRY_MS
+            }
+          }
+        } catch {
+          delay = COUNTS_RETRY_MS
+        } finally {
+          mainFlight = null
+        }
+        if (!isCurrent()) return
+        timers.main?.cancel()
+        let rateLimit: RateLimit | null = null
+        try {
+          rateLimit = await read($, rateLimitState)
+        } catch {
+          // without it the plain delay stands
+        }
+        timers.main = $.clock.after(pollDelayMs(delay, rateLimit), () => void runMain())
+      })()
+      mainFlight = flight
+      return flight
+    }
+
+    // A bare number is a pull request or an issue: GitHub numbers both together. The pull request is tried first.
+    const kindOfNumber = async (number: number): Promise<'pr' | 'issue'> => {
+      try {
+        // What is already known saves the lookup: the branch's pull request, a row of either list.
+        const branch = await read($, snapshotState)
+        if (branch.kind === 'pr' && branch.pr.number === number) return 'pr'
+        const prs = await read($, listState)
+        if (prs !== null && prs.kind === 'list' && prs.items.some(item => item.number === number)) return 'pr'
+        const issues = await read($, issuesState)
+        if (issues !== null && issues.kind === 'list' && issues.items.some(item => item.number === number)) return 'issue'
+        const target = await repoTarget()
+        if (typeof target === 'string') return 'pr'
+        const fetched = await fetchPullRequestByNumber(exec, target.location, target.account.login, number)
+        if (fetched.kind === 'ok') return fetched.pr === null ? 'issue' : 'pr'
+        return fetched.failure.kind === 'not-found' ? 'issue' : 'pr'
+      } catch {
+        return 'pr'
+      }
+    }
+
     live = {
       run,
       runList,
       stopList,
+      syncTab,
+      refreshTab,
+      kindOfNumber,
       cwdChanged: async () => {
         // The directory may be in another repository now: what was picked or pending in the old one goes first.
         const location = await readLocation(exec, await $.session.cwd())
         await dropIfRepoChanged($, location === null ? null : (repoSlug(location)?.toLowerCase() ?? null))
         await run('cwd')
         await runCounts()
+        void runMain()
         if (isListPolling) await runList()
+        if (tabPoll !== null) await syncTab()
       },
     }
 
-    if (e.isInteractive) void run('start').then(runCounts)
+    if (e.isInteractive) void run('start').then(runCounts).then(runMain)
     return next(e)
   })
 
@@ -875,7 +1385,14 @@ export const register: Register = (on, options) => {
   on('command.run', async ($, e, next) => {
     if (!activeNames.includes(e.command)) return next(e)
     const argument = e.args.trim().toLowerCase()
-    if (argument === 'list' || argument === 'ls') return { text: await openList($, live) }
+    if (argument === 'list' || argument === 'ls' || argument === 'prs') return { text: await openList($, live) }
+    if (argument === 'issues' || argument === 'i') return { text: await openTabCommand($, live, 'issues') }
+    if (argument === 'actions' || argument === 'ac') return { text: await openTabCommand($, live, 'actions') }
+    const target = /^(issue|run)\s+#?(\d+)$/.exec(argument)
+    if (target !== null) {
+      const number = Number(target[2])
+      return { text: target[1] === 'issue' ? await openIssue($, live, number, true) : await openRun($, live, number, true) }
+    }
     if (argument === '') {
       // No pull request for the branch (none yet, or a detached HEAD): the list is the useful view.
       const branch = await read($, snapshotState)
@@ -885,14 +1402,27 @@ export const register: Register = (on, options) => {
       await leaveSelection($)
       return { text: await openPane($, live) }
     }
-    if (/^#?\d+$/.test(argument)) return { text: await selectPr($, live, Number(argument.replace('#', ''))) }
+    if (/^#?\d+$/.test(argument)) {
+      const number = Number(argument.replace('#', ''))
+      // GitHub numbers issues and pull requests together: a number that is no pull request is tried as an issue.
+      if (live !== null && Number.isSafeInteger(number) && number >= 1 && !confirmGuard.isBusy && (await live.kindOfNumber(number)) === 'issue') {
+        return { text: await openIssue($, live, number, true) }
+      }
+      return { text: await selectPr($, live, number) }
+    }
     if (argument === 'back') {
+      if (await tabBack($, live)) return { text: 'Back to the list.' }
+      if ((await read($, paneTabState)) !== 'prs') return { text: 'Already at the list, nothing to go back from.' }
       if ((await read($, selectedState)) === null) return { text: 'No other pull request is shown, nothing to go back from.' }
       await back($, live)
       return { text: 'Back to the list of open PRs.' }
     }
     if (argument === 'refresh') {
       if (live === null) return { text: 'gh-status has not started yet.' }
+      if ((await read($, paneTabState)) !== 'prs') {
+        await live.refreshTab()
+        return { text: 'Refreshed.' }
+      }
       await live.run('command')
       const { snapshot } = await subjectSnapshot($, 'pane')
       return { text: snapshot.kind === 'pr' ? `Refreshed PR #${snapshot.pr.number}.` : 'Refreshed.' }
@@ -958,31 +1488,47 @@ export const register: Register = (on, options) => {
     )
   })
 
-  // One pane, two views: the list of open pull requests and the detail of one.
+  // One pane, three tabs. The tab row comes first; below it the active tab's list or detail.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     try {
-      if ((await read($, paneViewState)) === 'list') {
-        const listView = await readListView($, e.props.bodyColumns, e.surface, palette)
-        return renderList($.ui.resolve(e), listView, listHandlersFor($, live))
-      }
-      const view = await readView($, e.props.bodyColumns, e.surface, palette, 'pane')
-      return renderPane($.ui.resolve(e), view, handlersFor($, live, e.surface, 'pane'))
+      const table = $.ui.resolve(e)
+      const { Box } = table
+      const columns = e.props.bodyColumns
+      const surface = e.surface
+      const tabs = renderTabs(table, await readTabsView($, palette), tab => void showTab($, live, tab), columns)
+      return (
+        <Box flexDirection="column">
+          {tabs}
+          {await readTabBody($, table, columns, surface, palette, live)}
+        </Box>
+      )
     } catch {
       return next(e)
     }
   })
 
-  // Where the focus ring is, so the list can draw its row as focused.
+  // Where the focus ring is, so a list can draw its row as focused: the PRs tab keeps it in
+  // paneFocus, the Issues and Actions tabs in their own state (their row keys only, in a list).
   on('ui.focus', async ($, e, next) => {
-    if (e.requestId === PANE_ID) await update($, paneFocusState, () => e.element ?? null)
+    if (e.requestId === PANE_ID) {
+      const key = e.element ?? null
+      const tab = await read($, paneTabState)
+      if (tab === 'prs') {
+        await update($, paneFocusState, () => key)
+      } else if (key !== null && key.startsWith(tab === 'issues' ? 'issue-' : 'run-')) {
+        await patchTabState($, tab, state => (state.level === 'list' ? { ...state, focus: key } : state))
+      }
+    }
     return next(e)
   }).catch(($, e, next) => next(e))
 
   // Closing the pane (its mark, `close`, `x`) drops what it asked to confirm, the pick it showed
-  // and the list polling: nothing is polled once nobody looks at it.
+  // and all list and detail polling: nothing is polled once nobody looks at it. The tabs keep
+  // their level, page and row for the session.
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     if (live !== null) live.stopList()
+    controls.stopTab()
     await update($, pendingState, () => null)
     await update($, selectedState, () => null)
     await update($, selectedSnapshotState, () => null)

@@ -1868,3 +1868,65 @@ describe('the pane: linked issues and workflow runs', () => {
     expect(paneRowCount(base, { openRun: () => {} })).toBe(paneRowCount(base) + 1)
   })
 })
+
+describe('the main-branch segment of the band', () => {
+  const noPr: Snapshot = { kind: 'no-pr', at: '2026-01-01T00:00:00Z', location: makeLocation(), account: { login: 'me', source: 'active' } }
+  const red = { at: '2026-01-01T00:00:00Z', defaultBranch: 'main', worst: 'failure' as const, failing: [{ name: 'CI', runId: 7, url: 'https://github.com/o/r/actions/runs/7' }] }
+  const withMain = (view: View, mainStatus: View['mainStatus']): View => ({ ...view, mainStatus })
+  const withOpen = (calls: string[]) => handlersFor(calls, { openActions: () => void calls.push('openActions') })
+
+  test('shows "<branch> ✗ <name>" as a plain button on 3 that opens the Actions tab, with a PR and without', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      for (const base of [prView({ checks: [makeCheck()] }, 160), viewFor(noPr, 160)]) {
+        const calls: string[] = []
+        const ui = await rig.band($, surface, withMain(base, red), withOpen(calls))
+        expect(await textOf(ui)).toContain('main ✗ CI')
+        const button = await ui.find({ key: 'band-main' })
+        expect(button?.props).toMatchObject({ hotkey: '3' })
+        expect(JSON.stringify(await ui.find({ key: 'band-main' }))).toContain(`"color":${JSON.stringify(base.palette.failure)}`)
+        await ui.press({ key: 'band-main' })
+        expect(calls).toEqual(['openActions'])
+        await ui.unmount()
+      }
+    }
+  })
+
+  test('names the first failing workflow and counts the others', async ($, on) => {
+    const rig = createRig(on)
+    const failing = [...red.failing, { name: 'Lint', runId: 8, url: '' }, { name: 'Docs', runId: 9, url: '' }]
+    const ui = await rig.band($, 'terminal', withMain(viewFor(noPr, 160), { ...red, failing }), withOpen([]))
+    expect(await textOf(ui)).toContain('main ✗ CI +2')
+  })
+
+  test('is hidden when the branch is green, nothing is known or the view does not carry it', async ($, on) => {
+    const rig = createRig(on)
+    const green = { ...red, worst: 'success' as const, failing: [] }
+    for (const mainStatus of [green, null, undefined]) {
+      for (const base of [prView({ checks: [makeCheck()] }, 160), viewFor(noPr, 160)]) {
+        const ui = await rig.band($, 'terminal', withMain(base, mainStatus), withOpen([]))
+        expect(await ui.find({ key: 'band-main' })).toBeUndefined()
+        expect(await textOf(ui)).not.toContain('✗ CI')
+        await ui.unmount()
+      }
+    }
+  })
+
+  test('without the handler it is plain text, not a button', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.band($, 'terminal', withMain(viewFor(noPr, 160), red), handlersFor([]))
+    expect(await textOf(ui)).toContain('main ✗ CI')
+    expect(await ui.find({ key: 'band-main' })).toBeUndefined()
+  })
+
+  test('fits the row at every width', async ($, on) => {
+    const rig = createRig(on)
+    for (const columns of [160, 100, 80, 60, 40]) {
+      for (const base of [prView({ checks: [makeCheck()] }, columns), viewFor(noPr, columns)]) {
+        const ui = await rig.band($, 'terminal', withMain(base, red), withOpen([]))
+        for (const row of (await textOf(ui)).split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+        await ui.unmount()
+      }
+    }
+  })
+})
