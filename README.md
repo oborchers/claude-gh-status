@@ -105,7 +105,7 @@ Open the list with `l` in the band (when the branch has no pull request) or in t
 
 - **Groups, in this order.** Yours, Review requested from you, Waiting for review, Other open.
 - **Two lines per pull request.** The first has the status symbol (`✓` passing, `✗` failing, `●` running, `◷` queued), the title and the labels in a muted version of their GitHub color. The second has the number, author, age, checks, review state and comment count.
-- **One stop per pull request.** The arrow keys move one pull request at a time. The focused one shows a `▸` marker and a calm highlight; the mouse pointer highlights a row the same way. Enter or a click opens it.
+- **One stop per pull request.** The arrow keys move one pull request at a time. The title of the focused one is shown in the terminal's own selection highlight (the mouse pointer does the same under it), while the status symbol, the labels and the facts keep their colors. Enter or a click on the title opens it.
 - **Pages that fit the pane.** `n` next, `p` previous.
 - **Drafts.** Draft titles are dim. `h` hides or shows them.
 - **Live.** The list is read again every 60 s while the pane shows it, and `r` refreshes now.

@@ -4,7 +4,6 @@ import type { PaneTab } from '../src/model'
 import { PALETTES } from '../src/ui/colors'
 import type { TabsView } from '../src/ui/contract'
 import { cellWidth } from '../src/ui/format'
-import { FOCUS_BG, FOCUS_FG } from '../src/ui/row'
 import { renderTabs } from '../src/ui/tabs'
 import { SURFACES, createRig, hotkeysOf, linesOf, nodesOf } from './fixtures/ui-rig'
 
@@ -95,39 +94,32 @@ describe('renderTabs', () => {
     }
   })
 
-  test('the tab that holds the ring is drawn pre-swapped; every piece takes the swapped hover; each Button sits alone in its tabbox Box', async ($, on) => {
+  test('the Button holds only the monochrome name; the count or symbol follows outside, the symbol in its tone', async ($, on) => {
     const rig = rigFor(on)
     type Piece = { props?: Record<string, unknown>; hover?: unknown }
-    const swapped = { color: FOCUS_BG, backgroundColor: FOCUS_FG }
     const claude = PALETTES.claude
     for (const surface of SURFACES) {
-      const ui = await rig.show($, surface, viewOf({ tab: 'issues', focusedKey: 'tab-issues' }), ignore, 80)
+      const ui = await rig.show($, surface, viewOf({ tab: 'issues' }), ignore, 80)
       const issues = (await ui.find({ key: 'tab-issues' })) as { children: Piece[] }
-      expect(issues.children.map((piece) => piece.props?.color)).toEqual([FOCUS_BG, FOCUS_BG, FOCUS_BG])
-      expect(issues.children.map((piece) => piece.props?.backgroundColor)).toEqual([FOCUS_FG, FOCUS_FG, FOCUS_FG])
-      expect(issues.children.every((piece) => piece.props?.bold === true)).toBe(true)
-      for (const piece of issues.children) expect(piece.hover).toEqual({ ...swapped, bold: true })
+      expect(issues.children).toHaveLength(1)
+      expect(issues.children[0]).toMatchObject({ children: ['Issues'], props: { bold: true } })
+      expect(issues.children[0]?.props?.color).toBeUndefined()
+      expect(issues.children[0]?.props?.backgroundColor).toBeUndefined()
       const actions = (await ui.find({ key: 'tab-actions' })) as { children: Piece[] }
-      // not focused: its own look, the symbol in its tone, and the swapped hover (the symbol keeps its tone as the background)
-      expect(actions.children[0]?.props?.color).toBeUndefined()
+      expect(actions.children).toHaveLength(1)
       expect(actions.children[0]?.props?.dimColor).toBe(true)
-      expect(actions.children[0]?.hover).toEqual(swapped)
-      expect(actions.children[2]?.props?.color).toBe(claude.failure)
-      expect(actions.children[2]?.hover).toEqual({ color: FOCUS_BG, backgroundColor: claude.failure })
-      for (const tab of ['prs', 'issues', 'actions']) {
-        const box = (await ui.find({ key: `tabbox-${tab}` })) as { type: string; children: { type: string }[] }
-        expect(box.type).toBe('Box')
-        expect(box.children.map((child) => child.type)).toEqual(['Button'])
+      const texts = nodesOf(await ui.drawn()).filter((node) => node.type === 'Text')
+      const symbol = texts.find((node) => node.children?.[0] === '✗')
+      expect(symbol?.props?.color).toBe(claude.failure)
+      expect(texts.find((node) => node.children?.[0] === '7')?.props?.color).toBeUndefined()
+      for (const node of texts) {
+        expect(node).not.toHaveProperty('hover')
+        expect(node.props?.backgroundColor).toBeUndefined()
       }
+      expect(await linesOf(ui)).toEqual(['1: PRs 4   2: Issues 7   3: Actions ✗'])
+      for (const tab of ['prs', 'issues', 'actions']) expect(await ui.find({ key: `tabbox-${tab}` })).toBeUndefined()
       await ui.unmount()
     }
-  })
-
-  test('the symbol of a focused tab keeps its tone as the background', async ($, on) => {
-    const rig = rigFor(on)
-    const ui = await rig.show($, 'terminal', viewOf({ tab: 'actions', focusedKey: 'tab-actions' }), ignore, 80)
-    const actions = (await ui.find({ key: 'tab-actions' })) as { children: { props?: Record<string, unknown> }[] }
-    expect(actions.children[2]?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
   })
 
   test('locked: the same look as plain text, no Buttons', async ($, on) => {

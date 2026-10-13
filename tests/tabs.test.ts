@@ -366,9 +366,7 @@ describe('levels and cross links', () => {
       await press(ui, world, key)
       expect(await has(ui, 'issue-12')).toBe(true)
       expect(await has(ui, 'tab-issues')).toBe(true)
-      // the list shows the row the detail was opened from as focused
-      expect(await sees(ui, /▸ .*Issue 12/)).toBe(true)
-      expect(await sees(ui, /▸ .*Issue 11/)).toBe(false)
+      expect(await sees(ui, /▸ /)).toBe(false)
     }
     await ui.unmount()
   })
@@ -386,15 +384,15 @@ describe('levels and cross links', () => {
     await ui.unmount()
   })
 
-  test('the row a detail was opened from is remembered and focused again', async ($, on) => {
+  test('the row a detail was opened from is listed again, with no marker', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await gh($, world, 'issues')
     const ui = await showPane($)
-    // the row that was opened is the row the ring returns to
     await press(ui, world, 'issue-11')
     await press(ui, world, 'back')
-    expect(await sees(ui, /▸ .*Issue 11/)).toBe(true)
+    expect(await has(ui, 'issue-11')).toBe(true)
+    expect(await sees(ui, /▸ /)).toBe(false)
     await ui.unmount()
   })
 

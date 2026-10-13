@@ -272,38 +272,30 @@ describe('the issue detail', () => {
 })
 
 describe('the issue detail header title', () => {
-  const swapped = { color: '#30363d', backgroundColor: '#e6edf3' }
   type Piece = { props?: Record<string, unknown>; hover?: unknown }
 
-  test('is the Button text; pre-swapped with the same hover while it holds the ring, normal plus hover otherwise', async ($, on) => {
+  test('is a plain Button whose one child is the monochrome title Text, no swapped colors, no hover', async ($, on) => {
     const rig = createRig(on)
     for (const surface of SURFACES) {
-      const base = viewOf(snapshotOf(issueOf()))
-      const focused = await rig.draw($, surface, { ...base, focusedKey: 'issue-5' }, handlersFor([]))
-      const on1 = (await focused.find({ key: 'issue-5' })) as { props: Record<string, unknown>; children: Piece[] }
-      expect(on1.props.label).toBe('#5 Crash on start')
-      expect(on1.children).toHaveLength(1)
-      expect(on1.children[0]?.props).toMatchObject(swapped)
-      expect(on1.children[0]?.hover).toEqual(swapped)
-      await focused.unmount()
-      for (const focusedKey of [null, 'tab-issues', 'back']) {
-        const rest = await rig.draw($, surface, { ...base, focusedKey }, handlersFor([]))
-        const off = (await rest.find({ key: 'issue-5' })) as { children: Piece[] }
-        expect(off.children[0]?.props?.color).toBeUndefined()
-        expect(off.children[0]?.props?.backgroundColor).toBeUndefined()
-        expect(off.children[0]?.hover).toEqual(swapped)
-        await rest.unmount()
-      }
+      const ui = await rig.draw($, surface, viewOf(snapshotOf(issueOf())), handlersFor([]))
+      const button = (await ui.find({ key: 'issue-5' })) as { props: Record<string, unknown>; children: Piece[] }
+      expect(button.props.label).toBe('#5 Crash on start')
+      expect(button.props.plain).toBe(true)
+      expect(button.children).toHaveLength(1)
+      expect(button.children[0]?.props?.color).toBeUndefined()
+      expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
+      expect(button.children[0]).not.toHaveProperty('hover')
+      await ui.unmount()
     }
   })
 
-  test('sits alone in a Box keyed head-issue-5', async ($, on) => {
+  test('is not wrapped in a head- Box, and a press still refreshes', async ($, on) => {
     const rig = createRig(on)
-    const ui = await rig.draw($, 'terminal', { ...viewOf(snapshotOf(issueOf())), focusedKey: 'issue-5' }, handlersFor([]))
-    const box = (await ui.find({ key: 'head-issue-5' })) as { type: string; children: { type: string; key?: unknown }[] }
-    expect(box.type).toBe('Box')
-    expect(box.children.map((child) => child.type)).toEqual(['Button'])
+    const calls: string[] = []
+    const ui = await rig.draw($, 'terminal', viewOf(snapshotOf(issueOf())), handlersFor(calls))
+    expect(await ui.find({ key: 'head-issue-5' })).toBeUndefined()
     await ui.press({ key: 'issue-5' })
+    expect(calls).toContain('refresh')
     await ui.unmount()
   })
 })

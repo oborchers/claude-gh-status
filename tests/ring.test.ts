@@ -9,7 +9,6 @@ import type { On } from 'claude-code'
 import { jobsFailed } from './fixtures/jobs'
 import { prFailing, prGreen, prNone } from './fixtures/pr-raw'
 import { MAIN_STATUS_POLL_MS } from '../src/runs'
-import { FOCUS_BG } from '../src/ui/row'
 
 const NOW = Date.parse('2026-10-12T12:00:00Z')
 const PANE = 'gh-status'
@@ -267,55 +266,35 @@ const ring = async ($: Engine, world: World, element: string) => {
   await world.clock.settle()
 }
 
-type Found = Awaited<ReturnType<Pane['find']>>
-const textColors = (button: Found): unknown[] => ((button?.children ?? []) as { props?: { color?: unknown } }[]).map(child => child.props?.color)
-
 describe('the pane ring', () => {
-  test('the hook follows the ring: the row marker leaves the list for a footer button or a tab, and the tab is drawn calm', async ($, on) => {
+  test('the list draws no marker and no swapped colors, wherever the ring is', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await gh($, world, 'issues')
     const ui = await showPane($)
-    await ring($, world, 'issue-12')
-    expect(await sees(ui, /▸ .*Issue 12/)).toBe(true)
-    expect(textColors(await ui.find({ key: 'tab-issues' }))).toEqual([undefined, undefined, undefined])
-    await ring($, world, 'issues-close')
-    expect(await sees(ui, /▸ /)).toBe(false)
-    await ring($, world, 'tab-issues')
-    expect(await sees(ui, /▸ /)).toBe(false)
-    expect(new Set(textColors(await ui.find({ key: 'tab-issues' })))).toEqual(new Set([FOCUS_BG]))
-    expect(textColors(await ui.find({ key: 'tab-actions' }))).not.toContain(FOCUS_BG)
-    await ring($, world, 'issue-11')
-    expect(await sees(ui, /▸ .*Issue 11/)).toBe(true)
+    for (const element of ['issue-12', 'issues-close', 'tab-issues', 'issue-11']) {
+      await ring($, world, element)
+      expect(await sees(ui, /▸ /)).toBe(false)
+      const texts = (await ui.find({ key: 'issue-12' }))?.children as { props?: { color?: unknown; backgroundColor?: unknown } }[]
+      expect(texts.map((child) => child.props?.color)).toEqual([undefined])
+      expect(texts.map((child) => child.props?.backgroundColor)).toEqual([undefined])
+    }
     await ui.unmount()
   })
 
-  test('the Actions list follows the ring the same way', async ($, on) => {
+  test('the Actions list keeps the ring too, and its row stays a monochrome title', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await gh($, world, 'actions')
     const ui = await showPane($)
     await ring($, world, 'run-501')
-    expect(await sees(ui, /▸ .*Lint/)).toBe(true)
-    await ring($, world, 'actions-refresh')
     expect(await sees(ui, /▸ /)).toBe(false)
+    const title = (await ui.find({ key: 'run-501' }))?.children as { props?: { color?: unknown; backgroundColor?: unknown } }[]
+    expect(title.map((child) => child.props?.color)).toEqual([undefined])
     await ui.unmount()
   })
 
-  test('the issue detail draws its title calm while the ring is on it, and not otherwise', async ($, on) => {
-    const world = setup(on)
-    await start($, world)
-    await gh($, world, 'issues')
-    const ui = await showPane($)
-    await press(ui, world, 'issue-12')
-    await ring($, world, 'issue-12')
-    expect(textColors(await ui.find({ key: 'issue-12' }))).toEqual([FOCUS_BG])
-    await ring($, world, 'tab-issues')
-    expect(textColors(await ui.find({ key: 'issue-12' }))).toEqual([undefined])
-    await ui.unmount()
-  })
-
-  test('re-entering a detail puts the ring on its header title, never on the tab button', async ($, on) => {
+  test('re-entering a detail draws its header title as the one Button of that key, never swapped', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await gh($, world, 'issues')
@@ -323,40 +302,37 @@ describe('the pane ring', () => {
     await press(ui, world, 'issue-12')
     await press(ui, world, 'tab-prs')
     await press(ui, world, 'tab-issues')
-    expect(textColors(await ui.find({ key: 'issue-12' }))).toEqual([FOCUS_BG])
-    expect(textColors(await ui.find({ key: 'tab-issues' }))).toEqual([undefined, undefined, undefined])
+    expect(await has(ui, 'issue-12')).toBe(true)
+    expect(await has(ui, 'tab-issues')).toBe(true)
     await press(ui, world, 'tab-actions')
     await press(ui, world, 'run-501')
     await press(ui, world, 'tab-prs')
     await press(ui, world, 'tab-actions')
-    expect(textColors(await ui.find({ key: 'run-501' }))).toEqual([FOCUS_BG])
-    expect(textColors(await ui.find({ key: 'tab-actions' }))).not.toContain(FOCUS_BG)
+    expect(await has(ui, 'run-501')).toBe(true)
     await ui.unmount()
   })
 
-  test('a picked pull request gets the ring on its title when its tab is entered again', async ($, on) => {
+  test('a picked pull request keeps its header title Button when its tab is entered again', async ($, on) => {
     const world = setup(on)
     await start($, world)
     await gh($, world, 'issues')
     const ui = await showPane($)
     await press(ui, world, 'issue-12')
     await press(ui, world, 'linked-pr-14580')
-    expect(textColors(await ui.find({ key: 'pr-14580' }))).toEqual([undefined])
     await press(ui, world, 'tab-issues')
     await press(ui, world, 'tab-prs')
-    expect(textColors(await ui.find({ key: 'pr-14580' }))).toEqual([FOCUS_BG])
-    expect(new Set(textColors(await ui.find({ key: 'tab-prs' })))).toEqual(new Set([undefined]))
+    expect(await has(ui, 'pr-14580')).toBe(true)
     await ui.unmount()
   })
 
-  test('the branch pull request gets the ring on its anchor when its tab is entered again', async ($, on) => {
+  test('the branch pull request keeps its anchor Button when its tab is entered again', async ($, on) => {
     const world = setup(on, prFailing)
     await start($, world)
     await gh($, world)
     const ui = await showPane($)
     await press(ui, world, 'tab-issues')
     await press(ui, world, 'tab-prs')
-    expect(textColors(await ui.find({ key: 'pr-anchor' }))).toEqual([FOCUS_BG])
+    expect(await has(ui, 'pr-anchor')).toBe(true)
     await ui.unmount()
   })
 })

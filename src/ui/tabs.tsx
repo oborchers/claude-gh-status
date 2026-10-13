@@ -10,7 +10,6 @@ import { tone } from './colors'
 import type { Tone } from './colors'
 import type { TabsView, UiTable } from './contract'
 import { cellWidth, truncate } from './format'
-import { swapped } from './row'
 
 const TAB_GAP = '   '
 const TAB_GAP_WIDTH = 3
@@ -72,33 +71,27 @@ export function renderTabs(table: UiTable, view: TabsView, onShow: (tab: PaneTab
     const isActive = view.tab === spec.tab
     const suffix = hasSuffix ? (suffixes[index] ?? null) : null
     const name = bare <= columns ? spec.name : truncate(spec.name, nameRoom)
-    const isFocused = view.focusedKey === spec.key
     const bold = isActive ? true : undefined
     const style = { bold, dimColor: isActive ? undefined : true }
-    const plainHover = swapped(undefined, isActive)
-    // Focused, a piece is drawn pre-swapped so the engine's inverse reads as normal colors on the focus background.
-    const piece = (text: string, shown?: string): RenderElement => {
-      if (view.isLocked) return shown === undefined ? <Text {...style}>{text}</Text> : <Text color={shown} bold={bold}>{text}</Text>
-      const hover = shown === undefined ? plainHover : swapped(shown, isActive)
-      if (isFocused) return <Text {...hover} hover={hover}>{text}</Text>
-      if (shown === undefined) return <Text {...style} hover={hover}>{text}</Text>
-      return <Text color={shown} bold={bold} hover={hover}>{text}</Text>
-    }
-    const children: RenderElement[] = [piece(name)]
+    // The Button holds only the monochrome name, so the engine's own inverse is a clean bar on it;
+    // the count or symbol follows outside, the symbol in its tone.
+    const tail: RenderElement[] = []
     if (suffix !== null) {
-      children.push(piece(' '))
-      children.push(piece(suffix.text, suffix.color === undefined ? undefined : tone(palette, suffix.color)))
+      tail.push(<Text {...style}>{' '}</Text>)
+      const color = suffix.color === undefined ? undefined : tone(palette, suffix.color)
+      tail.push(color === undefined ? <Text {...style}>{suffix.text}</Text> : <Text color={color} bold={bold}>{suffix.text}</Text>)
     }
     if (index > 0) nodes.push(<Text>{TAB_GAP}</Text>)
     if (view.isLocked) {
-      nodes.push(<Box flexShrink={0}>{[<Text {...style}>{`${spec.hotkey}: `}</Text>, ...children]}</Box>)
+      nodes.push(<Box flexShrink={0}>{[<Text {...style}>{`${spec.hotkey}: `}</Text>, <Text {...style}>{name}</Text>, ...tail]}</Box>)
       return
     }
     nodes.push(
-      <Box key={`tabbox-${spec.tab}`} flexShrink={0}>
+      <Box flexShrink={0}>
         <Button key={spec.key} plain hotkey={spec.hotkey} label={spec.name} onPress={() => onShow(spec.tab)}>
-          {children}
+          <Text {...style}>{name}</Text>
         </Button>
+        {tail}
       </Box>,
     )
   })

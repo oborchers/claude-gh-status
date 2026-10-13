@@ -6,12 +6,10 @@ import type { RepoHandlers, RunsView } from '../src/ui/contract'
 import { cellWidth } from '../src/ui/format'
 import { renderRuns } from '../src/ui/runs'
 import { SURFACES, createRig, hotkeysOf, linesOf, nodesOf, textOf, textsOf } from './fixtures/ui-rig'
+import type { Node } from './fixtures/ui-rig'
 import { makeLocation } from './fixtures/pr-builder'
 
 const NOW = Date.parse('2026-10-12T12:00:00Z')
-const FOCUS_BG = '#30363d'
-const FOCUS_FG = '#e6edf3'
-const FOCUS_DIM = '#8b949e'
 
 function run(id: number, extra: Partial<RunItem> = {}): RunItem {
   return {
@@ -49,7 +47,7 @@ function crowd(recent = 14): RunList {
 }
 
 function viewOf(runs: RunList | null, extra: Partial<RunsView> = {}): RunsView {
-  return { runs, page: 0, focusedKey: null, nowMs: NOW, columns: 100, palette: PALETTES.claude, ...extra }
+  return { runs, page: 0, nowMs: NOW, columns: 100, palette: PALETTES.claude, ...extra }
 }
 
 function handlersFor(calls: string[]): RepoHandlers {
@@ -199,7 +197,7 @@ describe('renderRuns rows', () => {
     expect(lines.find((line) => line.includes('Workflow 1'))).toBe('  ✓ Workflow 1')
     expect(lines.find((line) => line.includes('Workflow 3'))).toBe('  ✓ Workflow 3  feat/things')
     expect(lines.find((line) => line.includes('Workflow 100'))).toBe('  ✓ Workflow 100  other/branch')
-    const texts = textsOf(await ui.find({ key: 'run-3' }))
+    const texts = textsOf(await ui.drawn())
     const named = (content: string) => texts.find((node) => node.children?.[0] === content)
     expect(named('Workflow 3')?.props?.bold).toBe(true)
     expect(named('feat/things')?.props?.dimColor).toBe(true)
@@ -227,8 +225,8 @@ describe('renderRuns rows', () => {
   test('the facts line is dim', async ($, on) => {
     const rig = rigFor(on)
     const ui = await show(rig, $, 'terminal', viewOf(listOf({ main: [run(9, { state: 'failure' })] })))
-    const texts = textsOf(await ui.find({ key: 'run-9' }))
-    const start = texts.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
+    const texts = textsOf(await ui.drawn())
+    const start = texts.findIndex((node) => node.children?.[0] === '    ')
     const facts = texts.slice(start + 1).filter((node) => String(node.children?.[0]).trim() !== '')
     expect(facts.length).toBeGreaterThan(5)
     for (const node of facts) {
@@ -260,72 +258,58 @@ describe('renderRuns rows', () => {
     expect(await titleLine('Build and deploy to production environments', 'feature/x', 20)).toBe('  ✓ Build and deplo…')
   })
 
-  describe('the focused row', () => {
+  describe('the row styling', () => {
+    const textsIn = (node: unknown): Node[] => nodesOf(node).filter((entry) => entry.type === 'Text' && typeof entry.children?.[0] === 'string')
     const failing = listOf({ main: [run(15, { name: 'CI', state: 'failure' })] })
 
-    test('marker, and the title line drawn swapped, filled to the width', async ($, on) => {
+    test('only the title is the Button, one monochrome Text; symbol, labels and facts stay outside with their colors', async ($, on) => {
       const rig = rigFor(on)
       for (const palette of [PALETTES.claude, PALETTES.github]) {
-        const ui = await show(rig, $, 'terminal', viewOf(failing, { palette, focusedKey: 'run-15' }))
-        expect((await linesOf(ui)).filter((line) => line.startsWith('▸'))).toEqual(['▸ ✗ CI'])
-        const texts = textsOf(await ui.find({ key: 'run-15' }))
-        const first = texts.slice(0, texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
-        const named = (content: string) => first.find((node) => node.children?.[0] === content)
-        expect(named('✗')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.failure })
-        expect(named('CI')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG, bold: true })
-        expect(named('▸ ')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: palette.pending })
-        expect(first.at(-1)?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
-        expect(cellWidth(first.map((node) => String(node.children?.[0])).join(''))).toBe(100)
+        const ui = await show(rig, $, 'terminal', viewOf(failing, { palette }))
+        const button = (await ui.find({ key: 'run-15' })) as { props: Record<string, unknown>; children: Node[] }
+        expect(button.children).toHaveLength(1)
+        expect(button.children[0]?.children).toEqual(['CI'])
+        expect(button.children[0]?.props?.color).toBeUndefined()
+        expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
+        expect(button.children[0]?.props?.bold).toBe(true)
+        expect(button.children[0]).not.toHaveProperty('hover')
+        const outside = textsIn(await ui.drawn()).filter((entry) => !(button.children as Node[]).includes(entry))
+        const named = (content: string) => outside.find((entry) => entry.children?.[0] === content)
+        expect(named('✗')?.props?.color).toBe(palette.failure)
+        for (const entry of outside) expect(entry.props?.backgroundColor).toBeUndefined()
+        expect(outside.some((entry) => entry.children?.[0] === '▸ ')).toBe(false)
         await ui.unmount()
       }
     })
 
-    test('a focused dim state symbol and branch are swapped onto the grey', async ($, on) => {
+    test('a dim state symbol and the branch are dim Text outside the Button', async ($, on) => {
       const rig = rigFor(on)
-      const ui = await show(rig, $, 'terminal', viewOf(listOf({ recent: [run(15, { name: 'CI', state: 'cancelled', branch: 'x/y' })] }), { focusedKey: 'run-15' }))
-      const texts = textsOf(await ui.find({ key: 'run-15' }))
-      const named = (content: string) => texts.find((node) => node.children?.[0] === content)
-      expect(named('⊘')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_DIM })
-      expect(named('x/y')?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_DIM })
-    })
-
-    test('the facts line: the opening piece as is, the later ones swapped, filled to the width', async ($, on) => {
-      const rig = rigFor(on)
-      const ui = await show(rig, $, 'terminal', viewOf(failing, { focusedKey: 'run-15' }))
-      const texts = textsOf(await ui.find({ key: 'run-15' }))
-      const second = texts.slice(texts.findIndex((node) => String(node.children?.[0]).startsWith('\n')))
-      expect(second.length).toBeGreaterThan(3)
-      expect(second[0]?.props).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
-      for (const node of second.slice(1)) expect(node.props).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_DIM })
-      expect(cellWidth(second.map((node) => String(node.children?.[0])).join('').slice(1))).toBe(100)
+      const ui = await show(rig, $, 'terminal', viewOf(listOf({ recent: [run(15, { name: 'CI', state: 'cancelled', branch: 'x/y' })] })))
+      const texts = textsIn(await ui.drawn())
+      expect(texts.find((entry) => entry.children?.[0] === '⊘')?.props?.dimColor).toBe(true)
+      expect(texts.find((entry) => entry.children?.[0] === 'x/y')?.props?.dimColor).toBe(true)
       await ui.unmount()
     })
 
-    test('normal colors when another row, or none, has the focus', async ($, on) => {
-      const rig = rigFor(on)
-      for (const focusedKey of [null, 'run-99']) {
-        const ui = await show(rig, $, 'terminal', viewOf(failing, { focusedKey }))
-        const texts = textsOf(await ui.find({ key: 'run-15' }))
-        expect(texts.find((node) => node.children?.[0] === '✗')?.props?.backgroundColor).toBeUndefined()
-        expect(texts.some((node) => node.children?.[0] === '▸ ')).toBe(false)
-        for (const node of texts.slice(texts.findIndex((entry) => String(entry.children?.[0]).startsWith('\n')) + 1)) expect(node.props?.backgroundColor).toBeUndefined()
-        await ui.unmount()
-      }
-    })
-
-    test('a hovered row looks like a focused one; the keyed Box holds only the Button', async ($, on) => {
+    test('the facts line is plain Text outside the Button, no inverse pieces, no padding to the width', async ($, on) => {
       const rig = rigFor(on)
       const ui = await show(rig, $, 'terminal', viewOf(failing))
-      const texts = textsOf(await ui.find({ key: 'run-15' }))
-      const split = texts.findIndex((node) => String(node.children?.[0]).startsWith('\n'))
-      const hoverOf = (content: string) => (texts.find((node) => node.children?.[0] === content) as { hover?: unknown } | undefined)?.hover
-      expect(hoverOf('✗')).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
-      expect(hoverOf('CI')).toMatchObject({ color: FOCUS_BG, backgroundColor: FOCUS_FG })
-      expect((texts[split] as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_DIM, backgroundColor: FOCUS_BG })
-      for (const node of texts.slice(split + 1)) expect((node as { hover?: unknown }).hover).toMatchObject({ color: FOCUS_BG })
-      const rows = (await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))
-      expect(rows.map((box) => String(box.key))).toEqual(['row-run-15'])
-      expect((rows[0]?.children ?? []).map((child) => (child as { type?: string }).type)).toEqual(['Button'])
+      const button = (await ui.find({ key: 'run-15' })) as { children: Node[] }
+      const facts = textsIn(await ui.drawn()).filter((entry) => !(button.children as Node[]).includes(entry) && String(entry.children?.[0]).includes('#15'))
+      expect(facts).toHaveLength(1)
+      expect(facts[0]?.props?.dimColor).toBe(true)
+      const lines = await linesOf(ui)
+      expect(lines.some((line) => line.startsWith('    #15'))).toBe(true)
+      for (const line of lines.filter((line) => line.startsWith('    #'))) expect(cellWidth(line)).toBeLessThan(100)
+      await ui.unmount()
+    })
+
+    test('the row has no keyed Box and no hover pieces; the focused look is the engine inverse on the title', async ($, on) => {
+      const rig = rigFor(on)
+      const ui = await show(rig, $, 'terminal', viewOf(failing))
+      expect((await ui.findAll({ type: 'Box' })).filter((box) => String(box.key).startsWith('row-'))).toEqual([])
+      for (const entry of textsIn(await ui.drawn())) expect(entry).not.toHaveProperty('hover')
+      expect(await ui.findAll({ type: 'Button' })).toContainEqual(expect.objectContaining({ key: 'run-15' }))
       await ui.unmount()
     })
   })
@@ -340,7 +324,7 @@ describe('renderRuns fits the width', () => {
     const list = listOf({ main: heavy.slice(0, 2), branch: heavy.slice(2, 4), recent: [...heavy.slice(4), ...Array.from({ length: 10 }, (_, index) => run(100 + index))] })
     for (const columns of [10, 20, 40, 80, 120, 160]) {
       for (const surface of SURFACES) {
-        const ui = await show(rig, $, surface, viewOf(list, { columns, focusedKey: 'run-5002' }))
+        const ui = await show(rig, $, surface, viewOf(list, { columns }))
         for (const line of await linesOf(ui)) expect(cellWidth(line)).toBeLessThanOrEqual(Math.max(columns, 10))
         await ui.unmount()
       }

@@ -547,13 +547,13 @@ function navWidth(view: View, handlers: Handlers): number {
  */
 function selectedTitle(table: UiTable, view: View, handlers: Handlers, number: number, title: string): RenderElement {
   const key = `pr-${number}`
-  return titleButton(table, key, title, view.focusedKey === key, () => handlers.refresh())
+  return titleButton(table, key, title, () => handlers.refresh())
 }
 
 /** The branch pull request's title: on the terminal the `pr-anchor` Button drawn calm, on the desktop the Link. */
 function branchTitle(table: UiTable, view: View, handlers: Handlers, href: string, title: string): RenderElement {
   if (view.surface === 'desktop') return prAnchor(table, view, handlers, href, title)
-  return titleButton(table, 'pr-anchor', title, view.focusedKey === 'pr-anchor', () => handlers.openOnGitHub())
+  return titleButton(table, 'pr-anchor', title, () => handlers.openOnGitHub())
 }
 
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {

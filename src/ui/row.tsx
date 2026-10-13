@@ -1,6 +1,6 @@
-// The row machinery of the pane's lists: a row is one plain Button of two lines
-// (a title line and a dim line of facts) inside a keyed Box, the pieces drawn with
-// the colors the engine's focus inversion needs. Shared by the PR, Issues and Actions lists.
+// The row machinery of the pane's lists: a row is a title line, whose title alone is a plain
+// monochrome Button (so the engine's own inverse is the selection), and a line of facts.
+// Shared by the PR, Issues and Actions lists.
 
 import type { RenderElement } from 'claude-code'
 
@@ -14,10 +14,9 @@ import { relativeTime } from '../status'
 export const SEPARATOR = ' · '
 export const GAP = '  '
 export const GAP_WIDTH = 2
-export const MARKER = '▸ '
 export const NO_MARKER = '  '
 export const FOOTER_GAP = 2
-/** Cells before the title: the marker column, the status symbol and a space. */
+/** Cells before the title: two spaces, the status symbol and a space. */
 export const PREFIX_WIDTH = 4
 /** Title cells a line keeps before any label is dropped. */
 export const TITLE_FLOOR = 24
@@ -83,84 +82,53 @@ export function fitRuns(runs: Run[], max: number): Run[] {
   return kept
 }
 
-/** Colors of the focused row, raw so they read on light and dark themes alike. */
-export const FOCUS_BG = '#30363d'
-export const FOCUS_FG = '#e6edf3'
-export const FOCUS_DIM = '#8b949e'
-
-export type LineProps = { color?: string; backgroundColor?: string; dimColor?: true; bold?: true }
-
-/** The color a run is meant to show in: its own, the dim grey for dim runs, else undefined (the foreground). */
-export function segmentColor(palette: Palette, run: Run): string | undefined {
-  const own = run.hex ?? tone(palette, run.color)
-  if (own !== undefined) return own
-  return run.isDim === true ? FOCUS_DIM : undefined
+/** The color a run is drawn in: its own, else undefined (the foreground; dim runs use dimColor instead). */
+function runColor(palette: Palette, run: Run): string | undefined {
+  return run.hex ?? tone(palette, run.color)
 }
 
-/**
- * The colors of a title-line piece that shows `shown` on the focus background. The engine
- * marks a focused (or hovered) Button by inverting its first line, so the colors are drawn
- * swapped: after the inverse the piece reads `shown` (else the focus foreground) on FOCUS_BG.
- */
-export function swapped(shown: string | undefined, isBold: boolean): LineProps {
-  return { color: FOCUS_BG, backgroundColor: shown ?? FOCUS_FG, ...(isBold ? { bold: true as const } : {}) }
-}
-
-/** One piece of the title line, with the swapped colors it takes in focus and under the pointer. */
-export function titlePiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean): RenderElement {
+/** One piece of a line outside the Button, in its own colors. */
+function piece(table: UiTable, palette: Palette, run: Run, text = run.text): RenderElement {
   const { Text } = table
-  const isBold = run.isBold === true
-  const hover = swapped(segmentColor(palette, run), isBold)
-  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{run.text}</Text>
   return (
-    <Text color={run.hex ?? tone(palette, run.color)} bold={isBold ? true : undefined} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
-      {run.text}
-    </Text>
-  )
-}
-
-/**
- * One piece of the facts line: its own colors at rest. The engine's inverse stops at the
- * newline inside the piece that opens the line, and every later piece is inverted again,
- * so those are drawn swapped like the title line; the opening piece takes the focus
- * colors as they are.
- */
-export function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean, text = run.text, isOpening = false): RenderElement {
-  const { Text } = table
-  const hover = isOpening ? { color: FOCUS_DIM, backgroundColor: FOCUS_BG } : swapped(segmentColor(palette, run) ?? FOCUS_DIM, false)
-  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{text}</Text>
-  return (
-    <Text color={run.hex ?? tone(palette, run.color)} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
+    <Text color={runColor(palette, run)} bold={run.isBold === true ? true : undefined} dimColor={run.isDim === true ? true : undefined} wrap="truncate-end">
       {text}
     </Text>
   )
 }
 
 /**
- * A list row: one plain Button of two lines, so the focus ring stops once per row. The
- * engine inverts every piece but the one that opens the facts line, from its newline on.
- * `first` is the title line after the marker column, `facts` the facts line after its indent.
+ * A list row: a title line and a facts line. Only the title is the plain Button, drawn
+ * monochrome, so the engine's own inverse (focus or pointer) is a clean selection bar on
+ * it; the status symbol, the labels and the facts sit outside and keep their colors.
+ * `symbol` is the status mark, `title` the Button's one run (bold or dim), `after` what
+ * follows the title (labels, branch) and `facts` the facts line, indented under the title.
  */
 export function listRow(
   table: UiTable,
   palette: Palette,
-  opts: { key: string; rowKey: string; label: string; isFocused: boolean; columns: number; first: Run[]; facts: Run[]; onPress: () => void },
+  opts: { key: string; label: string; columns: number; symbol: Run; title: Run; after: Run[]; facts: Run[]; onPress: () => void },
 ): RenderElement {
-  const { Box, Button } = table
-  const { key, rowKey, label, isFocused, columns, onPress } = opts
-  const first: Run[] = [isFocused ? { text: MARKER, color: 'pending' } : { text: NO_MARKER }, ...opts.first]
-  first.push({ text: ' '.repeat(Math.max(0, columns - runsWidth(first))) })
+  const { Box, Button, Text } = table
+  const { key, label, columns, symbol, title, after, onPress } = opts
   const facts = fitRuns(opts.facts, Math.max(1, columns - PREFIX_WIDTH))
-  const factsUsed = PREFIX_WIDTH + runsWidth(facts)
-  const children: RenderElement[] = first.map((run) => titlePiece(table, palette, run, isFocused))
-  children.push(factPiece(table, palette, { text: '' }, isFocused, `\n${' '.repeat(PREFIX_WIDTH)}`, true))
-  for (const run of facts) children.push(factPiece(table, palette, run, isFocused))
-  children.push(factPiece(table, palette, { text: '' }, isFocused, ' '.repeat(Math.max(0, columns - factsUsed))))
   return (
-    <Box key={rowKey} flexDirection="column">
-      <Button key={key} plain label={label} onPress={onPress}>
-        {children}
-      </Button>
+    <Box flexDirection="column">
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Text>{NO_MARKER}</Text>
+        {piece(table, palette, symbol)}
+        <Text>{' '}</Text>
+        <Button key={key} plain label={label} onPress={onPress}>
+          <Text bold={title.isBold === true ? true : undefined} dimColor={title.isDim === true ? true : undefined} wrap="truncate-end">
+            {title.text}
+          </Text>
+        </Button>
+        {after.map((run) => piece(table, palette, run))}
+      </Box>
+      <Box flexDirection="row" flexWrap="nowrap">
+        <Text>{' '.repeat(PREFIX_WIDTH)}</Text>
+        {facts.map((run) => piece(table, palette, run))}
+      </Box>
     </Box>
   )
 }

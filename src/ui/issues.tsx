@@ -1,6 +1,6 @@
 // The Issues tab: the repository's open issues, grouped, one page at a time. An issue takes
 // two lines and a blank one, like a pull request of the PRs tab: the title line (open mark,
-// title, labels) and a dim line of facts, together one Button that opens it.
+// title, labels) and a dim line of facts, the title is the Button that opens it.
 
 import type { RenderElement } from 'claude-code'
 
@@ -35,15 +35,13 @@ function issueRow(table: UiTable, view: IssuesView, handlers: RepoHandlers, item
   const key = `issue-${item.number}`
   const room = Math.max(1, columns - PREFIX_WIDTH)
   const { title, labels } = fitTitle(item.title, item.labels, room)
-  const first: Run[] = [{ text: OPEN_MARK, color: 'success' }, { text: ' ' }, { text: title, isBold: true }]
-  if (labels.length > 0) first.push({ text: GAP }, ...labels)
   return listRow(table, view.palette, {
     key,
-    rowKey: `row-${key}`,
     label: `#${item.number} ${item.title}`,
-    isFocused: view.focusedKey === key,
     columns,
-    first,
+    symbol: { text: OPEN_MARK, color: 'success' },
+    title: { text: title, isBold: true },
+    after: labels.length > 0 ? [{ text: GAP }, ...labels] : [],
     facts: factRuns(item, view.nowMs),
     onPress: () => handlers.selectIssue(item.number),
   })

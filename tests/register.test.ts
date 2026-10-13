@@ -1671,7 +1671,7 @@ describe('the list of open pull requests', () => {
 
   describe('back to the list', () => {
     for (const key of ['back', 'pane-list']) {
-      test(`${key} (b or l) shows the list again in the same pane, the ring on the row it was opened from`, async ($, on) => {
+      test(`${key} (b or l) shows the list again in the same pane, the row it was opened from listed again`, async ($, on) => {
         const world = listWorld(on)
         await start($, world)
         await runPr($, 'list')
@@ -1689,9 +1689,9 @@ describe('the list of open pull requests', () => {
         expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
         expect(await ui.find({ key: 'list-next' })).toBeDefined()
         expect(await ui.find({ key: 'back' })).toBeUndefined()
-        // The row it was opened from carries the focus marker.
-        expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
-        expect(await sees(ui, /▸ .*Change 14579/)).toBe(false)
+        // The row it was opened from is listed again; no row carries a marker.
+        expect(await ui.find({ key: 'pr-14580' })).toBeDefined()
+        expect(await sees(ui, /▸ /)).toBe(false)
         // The pick is dropped: it is no longer polled.
         await world.clock.advance(120_000)
         expect(world.numberLookups()).toHaveLength(lookups)
@@ -1727,7 +1727,8 @@ describe('the list of open pull requests', () => {
       expect(world.opened.at(-1)).toMatchObject({ id: PANE })
       const ui = await showList($)
       expect(await ui.find({ key: 'list-next' })).toBeDefined()
-      expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
+      expect(await ui.find({ key: 'pr-14580' })).toBeDefined()
+      expect(await sees(ui, /▸ /)).toBe(false)
       await world.clock.settle()
       await ui.unmount()
     })

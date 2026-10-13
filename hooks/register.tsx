@@ -266,7 +266,7 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   const isElsewhere = (await read($, selectedState)) !== null && stored !== null && !(snapshot.kind === 'pr' && snapshot.pr.number === stored.prNumber)
   const counts = await read($, countsState)
   const mainStatus = settings.isMainShown ? await read($, mainStatusState) : null
-  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus, ...(subject === 'pane' ? { focusedKey: await read($, paneRingState) } : {}) }
+  return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus }
 }
 
 async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette, bodyRows?: number): Promise<ListView> {
@@ -278,7 +278,6 @@ async function readListView($: EngineInterface, columns: number, surface: 'termi
     page: fit.page,
     pageSize: fit.pageSize,
     hideDrafts,
-    focusedKey: await read($, paneFocusState),
     counts: await read($, countsState),
     nowMs: await $.clock.now(),
     columns,
@@ -294,23 +293,12 @@ async function readTabsView($: EngineInterface, palette: Palette): Promise<TabsV
   const main = settings.isMainShown ? await read($, mainStatusState) : null
   return {
     tab: await read($, paneTabState),
-    focusedKey: await read($, paneRingState),
     prCount: counts !== null ? counts.open : list !== null && list.kind === 'list' ? list.total : null,
     issueCount: counts?.issues ?? null,
     mainWorst: main === null ? null : main.worst,
     isLocked: (await read($, pendingState)) !== null,
     palette,
   }
-}
-
-/**
- * The row key that shows the marker: the ring's while it is on a row of this list (the
- * ring on a footer button or the tab row takes the marker away), else the remembered row
- * while the ring is not known.
- */
-function rowMarker(ring: string | null, remembered: string | null, prefix: string): string | null {
-  if (ring === null) return remembered
-  return ring.startsWith(prefix) ? ring : null
 }
 
 /** The number an issue snapshot is about. */
@@ -323,7 +311,6 @@ const runIdOf = (snapshot: RunSnapshot): number => (snapshot.kind === 'run' ? sn
 async function readTabBody($: EngineInterface, table: UiTable, columns: number, surface: 'terminal' | 'desktop', palette: Palette, live: Live | null, bodyRows?: number): Promise<RenderElement> {
   const tab = await read($, paneTabState)
   const nowMs = await $.clock.now()
-  const ring = await read($, paneRingState)
   if (tab === 'prs') {
     if ((await read($, paneViewState)) === 'list') {
       const listView = await readListView($, columns, surface, palette, bodyRows)
@@ -340,24 +327,24 @@ async function readTabBody($: EngineInterface, table: UiTable, columns: number, 
       const branch = await read($, snapshotState)
       const viewer = issues !== null && issues.kind === 'list' ? issues.account.login : 'account' in branch ? branch.account.login : ''
       const fit = fitTab('issues', state.page, bodyRows, (first, rows) => issuePageSize(issues, first, rows))
-      const view: IssuesView = { issues, page: fit.page, pageSize: fit.pageSize, focusedKey: rowMarker(ring, state.focus, 'issue-'), viewer, nowMs, columns, surface, palette }
+      const view: IssuesView = { issues, page: fit.page, pageSize: fit.pageSize, viewer, nowMs, columns, surface, palette }
       return renderIssues(table, view, handlers)
     }
     const stored = await read($, issueSnapshotState)
     const snapshot: IssueSnapshot = stored !== null && issueNumberOf(stored) === state.selected ? stored : { kind: 'loading', at: '', number: state.selected }
-    const view: IssueDetailView = { snapshot, focusedKey: ring, nowMs, columns, surface, palette }
+    const view: IssueDetailView = { snapshot, nowMs, columns, surface, palette }
     return renderIssueDetail(table, view, handlers)
   }
   const state = await read($, actionsTabState)
   if (state.level === 'list' || state.selected === null) {
     const runs = await read($, runsState)
     const fit = fitTab('actions', state.page, bodyRows, (first, rows) => runPageSize(runs, first, rows))
-    const view: RunsView = { runs, page: fit.page, pageSize: fit.pageSize, focusedKey: rowMarker(ring, state.focus, 'run-'), nowMs, columns, surface, palette }
+    const view: RunsView = { runs, page: fit.page, pageSize: fit.pageSize, nowMs, columns, surface, palette }
     return renderRuns(table, view, handlers)
   }
   const stored = await read($, runSnapshotState)
   const snapshot: RunSnapshot = stored !== null && runIdOf(stored) === state.selected ? stored : { kind: 'loading', at: '', runId: state.selected }
-  const view: RunDetailView = { snapshot, focusedKey: ring, outcome: null, nowMs, columns, surface, palette }
+  const view: RunDetailView = { snapshot, outcome: null, nowMs, columns, surface, palette }
   return renderRunDetail(table, view, handlers)
 }
 
@@ -739,7 +726,7 @@ async function focusDrawn($: EngineInterface, key: string): Promise<void> {
     await $.clock.sleep(FOCUS_SETTLE_MS)
     await $.ui.focus({ requestId: PANE_ID, key })
   } catch {
-    // the ring stays where the engine put it; the marker follows paneRing
+    // the ring stays where the engine put it
   }
 }
 
@@ -1583,7 +1570,7 @@ export const register: Register = (on, options) => {
     }
   })
 
-  // Where the focus ring is, so a list can draw its row as focused: the PRs tab keeps it in
+  // Where the focus ring is, to put it back after a back or a tab switch: the PRs tab keeps it in
   // paneFocus, the Issues and Actions tabs in their own state (their row keys only, in a list).
   on('ui.focus', async ($, e, next) => {
     if (e.requestId === PANE_ID) {
