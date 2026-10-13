@@ -652,11 +652,7 @@ async function back($: EngineInterface, live: Live | null): Promise<void> {
   }
   await showList($, live, false)
   if (key === null) return
-  try {
-    await $.ui.focus({ requestId: PANE_ID, key })
-  } catch {
-    // the ring stays where the engine put it; the marker already follows paneFocus
-  }
+  void focusDrawn($, key)
 }
 
 /** Switches the pane to its list view, with the keyboard when asked, sized to its current page, and reads the list now. */
@@ -730,6 +726,23 @@ async function tabViewRows($: EngineInterface, tab: 'issues' | 'actions'): Promi
  * branch pull request's `pr-anchor`). A request: where the engine refuses it (no keyboard, or `claude plugin
  * test`) the ring stays where it is.
  */
+/**
+ * Puts the ring on `key` once the new view is drawn. A list row and the detail header
+ * share their key, so a move asked for before the redraw lands on the header that is
+ * about to go, and the ring then falls to the first row. A short wait lets the view
+ * that changed draw first.
+ */
+const FOCUS_SETTLE_MS = 80
+
+async function focusDrawn($: EngineInterface, key: string): Promise<void> {
+  try {
+    await $.clock.sleep(FOCUS_SETTLE_MS)
+    await $.ui.focus({ requestId: PANE_ID, key })
+  } catch {
+    // the ring stays where the engine put it; the marker follows paneRing
+  }
+}
+
 async function restoreFocus($: EngineInterface, tab: PaneTab): Promise<void> {
   let key: string | null
   if (tab === 'prs') {
@@ -745,11 +758,7 @@ async function restoreFocus($: EngineInterface, tab: PaneTab): Promise<void> {
   }
   if (key === null) return
   await update($, paneRingState, () => key)
-  try {
-    await $.ui.focus({ requestId: PANE_ID, key })
-  } catch {
-    // the ring stays where the engine put it
-  }
+  void focusDrawn($, key)
 }
 
 /** Opens the pane on what the active tab shows, sized to it, and starts the poll that view needs. */
