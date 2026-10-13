@@ -7,23 +7,15 @@ import type { RenderElement } from 'claude-code'
 import type { ListGroup, ListItem, PrList } from '../model'
 import { PAGE_SIZE, groupItems, paginate } from '../list'
 import { relativeTime } from '../status'
-import { cellWidth, fitSegments, headingLine, retryText, truncate, unavailableText } from './format'
-import { mutedLabelColor, tone } from './colors'
-import type { Palette, Tone } from './colors'
+import { cellWidth, headingLine, retryText, unavailableText } from './format'
 import type { ListHandlers, ListView, UiTable } from './contract'
+import { GAP, PREFIX_WIDTH, blankLine, fitTitle, footerRows, joinFacts, listRow, messageLine, summaryLine } from './row'
+import type { Footer, Run } from './row'
 
-const SEPARATOR = ' · '
-const GAP = '  '
-const GAP_WIDTH = 2
-const MARKER = '▸ '
-const NO_MARKER = '  '
+export { FOCUS_BG, FOCUS_DIM, FOCUS_FG } from './row'
+
 const NO_STATUS = ' '
 const DRAFT = 'draft '
-const FOOTER_GAP = 2
-/** Cells before the title: the marker column, the status symbol and a space. */
-const PREFIX_WIDTH = 4
-/** Title cells a line keeps before any label is dropped. */
-const TITLE_FLOOR = 24
 const GROUP_HEADINGS: Record<ListGroup, string> = {
   yours: 'Yours',
   requested: 'Review requested from you',
@@ -31,11 +23,6 @@ const GROUP_HEADINGS: Record<ListGroup, string> = {
   other: 'Other open',
 }
 const REVIEW_TEXT = { approved: 'approved', 'changes-requested': 'changes requested', 'review-required': 'review required' } as const
-
-/** A piece of a line: `color` is a palette tone, `hex` a literal color; neither draws in the default text color. */
-type Run = { text: string; color?: Tone; hex?: string; isDim?: boolean; isBold?: boolean }
-
-const runsWidth = (runs: Run[]): number => runs.reduce((sum, run) => sum + cellWidth(run.text), 0)
 
 /** True when every pending check is still queued, none runs. */
 function isOnlyQueued(item: ListItem): boolean {
@@ -78,50 +65,6 @@ function reviewRun(item: ListItem): Run | null {
   }
 }
 
-/**
- * The labels that fit `room` cells, names only, two spaces apart, in the GitHub
- * color muted toward grey. Labels that do not fit are dropped from the end and
- * counted as `+N`; when not even that fits, nothing.
- */
-function labelRuns(item: ListItem, room: number): Run[] {
-  const { labels } = item
-  const build = (shown: number): Run[] => {
-    const runs: Run[] = []
-    for (const label of labels.slice(0, shown)) {
-      if (runs.length > 0) runs.push({ text: GAP })
-      runs.push({ text: label.name, hex: mutedLabelColor(label.color) })
-    }
-    if (shown < labels.length) {
-      if (runs.length > 0) runs.push({ text: GAP })
-      runs.push({ text: `+${labels.length - shown}`, isDim: true })
-    }
-    return runs
-  }
-  for (let shown = labels.length; shown >= 0; shown -= 1) {
-    const runs = build(shown)
-    if (runsWidth(runs) <= room) return runs
-  }
-  return []
-}
-
-/** The runs cut to `max` cells; the one that crosses the edge ends in an ellipsis. */
-function fitRuns(runs: Run[], max: number): Run[] {
-  const kept: Run[] = []
-  let used = 0
-  for (const run of runs) {
-    const width = cellWidth(run.text)
-    if (used + width <= max) {
-      kept.push(run)
-      used += width
-      continue
-    }
-    const text = truncate(run.text, max - used)
-    if (text !== '') kept.push({ ...run, text })
-    break
-  }
-  return kept
-}
-
 /** The facts line: '#15 · @oborchers · opened 2 h ago · 1/18 checks failing · review required · 💬 2'. */
 function metaRuns(item: ListItem, nowMs: number): Run[] {
   const facts: Run[] = [{ text: `#${item.number}`, isDim: true }]
@@ -129,65 +72,7 @@ function metaRuns(item: ListItem, nowMs: number): Run[] {
   facts.push({ text: `opened ${relativeTime(item.createdAt, nowMs)}`, isDim: true })
   for (const run of [checksRun(item), reviewRun(item)]) if (run !== null) facts.push(run)
   if (item.comments > 0) facts.push({ text: `💬 ${item.comments}`, isDim: true })
-  const runs: Run[] = []
-  for (const fact of facts) {
-    if (runs.length > 0) runs.push({ text: SEPARATOR, isDim: true })
-    runs.push(fact)
-  }
-  return runs
-}
-
-/** Colors of the focused row, raw so they read on light and dark themes alike. */
-export const FOCUS_BG = '#30363d'
-export const FOCUS_FG = '#e6edf3'
-export const FOCUS_DIM = '#8b949e'
-
-type LineProps = { color?: string; backgroundColor?: string; dimColor?: true; bold?: true }
-
-/** The color a run is meant to show in: its own, the dim grey for dim runs, else undefined (the foreground). */
-function segmentColor(palette: Palette, run: Run): string | undefined {
-  const own = run.hex ?? tone(palette, run.color)
-  if (own !== undefined) return own
-  return run.isDim === true ? FOCUS_DIM : undefined
-}
-
-/**
- * The colors of a title-line piece that shows `shown` on the focus background. The engine
- * marks a focused (or hovered) Button by inverting its first line, so the colors are drawn
- * swapped: after the inverse the piece reads `shown` (else the focus foreground) on FOCUS_BG.
- */
-function swapped(shown: string | undefined, isBold: boolean): LineProps {
-  return { color: FOCUS_BG, backgroundColor: shown ?? FOCUS_FG, ...(isBold ? { bold: true as const } : {}) }
-}
-
-/** One piece of the title line, with the swapped colors it takes in focus and under the pointer. */
-function titlePiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean): RenderElement {
-  const { Text } = table
-  const isBold = run.isBold === true
-  const hover = swapped(segmentColor(palette, run), isBold)
-  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{run.text}</Text>
-  return (
-    <Text color={run.hex ?? tone(palette, run.color)} bold={isBold ? true : undefined} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
-      {run.text}
-    </Text>
-  )
-}
-
-/**
- * One piece of the facts line: its own colors at rest. The engine's inverse stops at the
- * newline inside the piece that opens the line, and every later piece is inverted again,
- * so those are drawn swapped like the title line; the opening piece takes the focus
- * colors as they are.
- */
-function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolean, text = run.text, isOpening = false): RenderElement {
-  const { Text } = table
-  const hover = isOpening ? { color: FOCUS_DIM, backgroundColor: FOCUS_BG } : swapped(segmentColor(palette, run) ?? FOCUS_DIM, false)
-  if (isFocused) return <Text {...hover} hover={hover} wrap="truncate-end">{text}</Text>
-  return (
-    <Text color={run.hex ?? tone(palette, run.color)} dimColor={run.isDim === true ? true : undefined} hover={hover} wrap="truncate-end">
-      {text}
-    </Text>
-  )
+  return joinFacts(facts)
 }
 
 /**
@@ -195,55 +80,25 @@ function factPiece(table: UiTable, palette: Palette, run: Run, isFocused: boolea
  * engine inverts every piece but the one that opens the facts line, from its newline on.
  */
 function prRow(table: UiTable, view: ListView, handlers: ListHandlers, item: ListItem, columns: number): RenderElement {
-  const { Box, Button, Text } = table
   const { palette } = view
   const key = `pr-${item.number}`
   const isFocused = view.focusedKey === key
   // On a very narrow pane the draft prefix goes first; the title is dim anyway.
   const hasDraftPrefix = item.isDraft && columns - PREFIX_WIDTH - cellWidth(DRAFT) >= 4
   const room = Math.max(1, columns - PREFIX_WIDTH - (hasDraftPrefix ? cellWidth(DRAFT) : 0))
-  const titleWidth = cellWidth(item.title)
-  const everyLabel = labelRuns(item, Number.MAX_SAFE_INTEGER)
-  let labels: Run[] = []
-  if (everyLabel.length > 0) {
-    // The title shrinks to its floor before a label is dropped.
-    const fitsWhole = titleWidth + GAP_WIDTH + runsWidth(everyLabel) <= room
-    const labelRoom = fitsWhole ? room : room - Math.min(titleWidth, TITLE_FLOOR) - GAP_WIDTH
-    labels = labelRoom > 0 ? labelRuns(item, labelRoom) : []
-  }
-  const title = truncate(item.title, Math.max(1, room - (labels.length > 0 ? GAP_WIDTH + runsWidth(labels) : 0)))
-  const first: Run[] = [isFocused ? { text: MARKER, color: 'pending' } : { text: NO_MARKER }, statusOf(item), { text: ' ' }]
+  const { title, labels } = fitTitle(item.title, item.labels, room)
+  const first: Run[] = [statusOf(item), { text: ' ' }]
   if (hasDraftPrefix) first.push({ text: DRAFT, isDim: true })
   first.push({ text: title, isBold: !item.isDraft, isDim: item.isDraft })
   if (labels.length > 0) first.push({ text: GAP }, ...labels)
-  const used = runsWidth(first)
-  first.push({ text: ' '.repeat(Math.max(0, columns - used)) })
-  const facts = fitRuns(metaRuns(item, view.nowMs), Math.max(1, columns - PREFIX_WIDTH))
-  const factsUsed = PREFIX_WIDTH + runsWidth(facts)
-  const children: RenderElement[] = first.map((run) => titlePiece(table, palette, run, isFocused))
-  children.push(factPiece(table, palette, { text: '' }, isFocused, `\n${' '.repeat(PREFIX_WIDTH)}`, true))
-  for (const run of facts) children.push(factPiece(table, palette, run, isFocused))
-  children.push(factPiece(table, palette, { text: '' }, isFocused, ' '.repeat(Math.max(0, columns - factsUsed))))
-  return (
-    <Box key={`row-${item.number}`} flexDirection="column">
-      <Button key={key} plain label={`#${item.number} ${item.title}`} onPress={() => handlers.selectPr(item.number)}>
-        {children}
-      </Button>
-    </Box>
-  )
-}
-
-function blankLine(table: UiTable): RenderElement {
-  const { Text } = table
-  return <Text>{' '}</Text>
+  return listRow(table, palette, { key, rowKey: `row-${item.number}`, label: `#${item.number} ${item.title}`, isFocused, columns, first, facts: metaRuns(item, view.nowMs), onPress: () => handlers.selectPr(item.number) })
 }
 
 /** The summary line: '18 open · 1 to 25 · page 1 of 2 · drafts hidden', the account dim at the end. */
 function headerLine(table: UiTable, view: ListView, list: Extract<PrList, { kind: 'list' }>, page: ReturnType<typeof paginate>): RenderElement {
-  const { Box, Text } = table
   const columns = Math.max(10, view.columns)
-  const parts: { key: string; text: string; priority: number; width: number }[] = []
-  const add = (key: string, text: string, priority: number) => parts.push({ key, text, priority, width: cellWidth(text) })
+  const parts: { key: string; text: string; priority: number }[] = []
+  const add = (key: string, text: string, priority: number) => parts.push({ key, text, priority })
   add('open', `${list.total} open`, 1)
   if (page.total > 0) {
     add('range', `${page.first} to ${page.last}`, 2)
@@ -252,30 +107,8 @@ function headerLine(table: UiTable, view: ListView, list: Extract<PrList, { kind
   if (view.hideDrafts) add('drafts', 'drafts hidden', 4)
   if (list.isTruncated) add('truncated', `showing the first ${list.items.length}`, 5)
   add('account', `@${list.account.login}`, 6)
-  const kept = fitSegments(parts, columns, cellWidth(SEPARATOR))
-  const nodes: RenderElement[] = []
-  kept.forEach((part, index) => {
-    if (index > 0) {
-      nodes.push(
-        <Text dimColor wrap="truncate-end">
-          {SEPARATOR}
-        </Text>,
-      )
-    }
-    nodes.push(
-      <Text dimColor={part.key === 'account' ? true : undefined} wrap="truncate-end">
-        {truncate(part.text, columns)}
-      </Text>,
-    )
-  })
-  return (
-    <Box flexDirection="row" flexWrap="nowrap">
-      {nodes}
-    </Box>
-  )
+  return summaryLine(table, columns, parts)
 }
-
-type Footer = { key: string; hotkey: string; label: string; onPress: () => void }
 
 function footerButtons(view: ListView, handlers: ListHandlers, hasNext: boolean, hasPrev: boolean, isList: boolean): Footer[] {
   const buttons: Footer[] = []
@@ -285,42 +118,6 @@ function footerButtons(view: ListView, handlers: ListHandlers, hasNext: boolean,
   buttons.push({ key: 'list-refresh', hotkey: 'r', label: 'refresh', onPress: () => handlers.refresh() })
   buttons.push({ key: 'list-close', hotkey: 'x', label: 'close', onPress: () => handlers.closePane() })
   return buttons
-}
-
-/** The buttons packed into rows that fit `columns`. */
-function footerRows(table: UiTable, columns: number, buttons: Footer[]): RenderElement[] {
-  const { Box, Button } = table
-  const lines: Footer[][] = []
-  let width = 0
-  for (const button of buttons) {
-    const own = button.hotkey.length + 2 + cellWidth(button.label)
-    const current = lines.at(-1)
-    if (current === undefined || width + FOOTER_GAP + own > columns) {
-      lines.push([button])
-      width = own
-    } else {
-      current.push(button)
-      width += FOOTER_GAP + own
-    }
-  }
-  return lines.map((line) => (
-    <Box flexDirection="row" flexWrap="nowrap">
-      {line.map((button, index) => (
-        <Box flexShrink={0} marginLeft={index === 0 ? undefined : FOOTER_GAP}>
-          <Button key={button.key} plain hotkey={button.hotkey} label={button.label} onPress={button.onPress} />
-        </Box>
-      ))}
-    </Box>
-  ))
-}
-
-function messageLine(table: UiTable, view: ListView, text: string, color?: string): RenderElement {
-  const { Text } = table
-  return (
-    <Text color={color} dimColor={color === undefined ? true : undefined} wrap="truncate-end">
-      {truncate(text, Math.max(1, view.columns))}
-    </Text>
-  )
 }
 
 /** What the pane says while there is no list to draw. */
@@ -344,7 +141,7 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
     const state = stateText(view, list)
     return (
       <Box flexDirection="column">
-        {messageLine(table, view, state.text, state.isProblem ? view.palette.pending : undefined)}
+        {messageLine(table, view.columns, state.text, state.isProblem ? view.palette.pending : undefined)}
         {footerRows(table, columns, footerButtons(view, handlers, false, false, false))}
       </Box>
     )
@@ -355,10 +152,10 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
   const lines: RenderElement[] = [headerLine(table, view, list, page)]
   if (list.problem) {
     const text = `showing last data from ${relativeTime(list.at, view.nowMs)}, ${unavailableText(list.problem)}, ${retryText(list.problem, view.nowMs)}`
-    lines.push(messageLine(table, view, text, view.palette.pending))
+    lines.push(messageLine(table, view.columns, text, view.palette.pending))
   }
   if (page.rows.length === 0) {
-    lines.push(messageLine(table, view, view.hideDrafts && list.items.length > 0 ? 'Only drafts are open.' : 'No open pull requests.'))
+    lines.push(messageLine(table, view.columns, view.hideDrafts && list.items.length > 0 ? 'Only drafts are open.' : 'No open pull requests.'))
   }
   let current: ListGroup | null = null
   for (const [index, entry] of page.rows.entries()) {
@@ -366,7 +163,7 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
       // One blank line before every heading but the first.
       if (current !== null) lines.push(blankLine(table))
       current = entry.group
-      lines.push(messageLine(table, view, headingLine(GROUP_HEADINGS[entry.group], columns)))
+      lines.push(messageLine(table, view.columns, headingLine(GROUP_HEADINGS[entry.group], columns)))
     }
     lines.push(prRow(table, view, handlers, entry.item, columns))
     // One blank line between pull requests of a group, none after the last.
