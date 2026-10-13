@@ -436,16 +436,55 @@ export const ROWS_PER_PR = 3
  * stale hint or a wrapped footer. At most 40.
  */
 export function listRowCount(list: PrList | null, page: number, hideDrafts: boolean): number {
-  if (list === null || list.kind !== 'list') return 6
-  const shown = paginate(groupItems(list.items, list.account.login), page + 1, PAGE_SIZE, hideDrafts)
+  return Math.min(40, Math.max(6, listDrawnRows(list, page, hideDrafts, PAGE_SIZE)))
+}
+
+/**
+ * Rows the list view draws for the zero-based `page` of `pageSize` items, uncapped (0 without a
+ * list). With `isPadded` a short last page counts as full (as many items as fit the list), so
+ * the size a fit picks does not grow at the end of the list.
+ */
+export function listDrawnRows(list: PrList | null, page: number, hideDrafts: boolean, pageSize: number, isPadded = false): number {
+  if (list === null || list.kind !== 'list') return 0
+  const shown = paginate(groupItems(list.items, list.account.login), page + 1, pageSize, hideDrafts)
   const groups = new Set(shown.rows.map(row => row.group)).size
   // Per group: its heading (+1) and no blank after its last pull request (-1); between groups, one blank.
-  const body = shown.rows.length * ROWS_PER_PR + Math.max(0, groups - 1)
-  return Math.min(40, Math.max(6, body + 4))
+  const padding = isPadded ? Math.max(0, Math.min(pageSize, shown.total) - shown.rows.length) : 0
+  return (shown.rows.length + padding) * ROWS_PER_PR + Math.max(0, groups - 1) + 4
+}
+
+/**
+ * The page size that makes the list fit `bodyRows` when the page starts at item
+ * `firstIndex` (zero-based): the largest up to PAGE_SIZE whose drawing fits.
+ */
+export function listPageSize(list: PrList | null, firstIndex: number, hideDrafts: boolean, bodyRows: number | undefined): number {
+  return fitPageSize(size => listDrawnRows(list, Math.floor(firstIndex / size), hideDrafts, size, true), bodyRows)
 }
 
 /** The highest zero-based page of the list under the current draft filter. */
-export function lastPage(list: PrList | null, hideDrafts: boolean): number {
+export function lastPage(list: PrList | null, hideDrafts: boolean, pageSize: number = PAGE_SIZE): number {
   if (list === null || list.kind !== 'list') return 0
-  return paginate(groupItems(list.items, list.account.login), 1, PAGE_SIZE, hideDrafts).pageCount - 1
+  return paginate(groupItems(list.items, list.account.login), 1, pageSize, hideDrafts).pageCount - 1
+}
+
+/**
+ * The largest page size from `max` down to 1 whose drawn rows (`rowsFor(size)`)
+ * fit `bodyRows`; 1 when none does. Without a usable `bodyRows` (missing, 0,
+ * not finite: tests, desktop) it is `max`. Pure, exported for tests.
+ */
+export function fitPageSize(rowsFor: (size: number) => number, bodyRows: number | undefined, max: number = PAGE_SIZE): number {
+  if (bodyRows === undefined || !Number.isFinite(bodyRows) || bodyRows <= 0) return max
+  for (let size = max; size > 1; size--) {
+    if (rowsFor(size) <= bodyRows) return size
+  }
+  return 1
+}
+
+/**
+ * The zero-based page of `toSize` that holds the first item of page `page` of
+ * `fromSize`, so a pane that resizes keeps its first visible item. Pure, exported for tests.
+ */
+export function rebasePage(page: number, fromSize: number, toSize: number): number {
+  if (fromSize === toSize) return Math.max(0, page)
+  return Math.max(0, Math.floor((Math.max(0, page) * fromSize) / toSize))
 }

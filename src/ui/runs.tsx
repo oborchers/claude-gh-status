@@ -112,7 +112,7 @@ export function renderRuns(table: UiTable, view: RunsView, handlers: RepoHandler
     )
   }
 
-  const page = paginateRuns(runs, view.page + 1)
+  const page = paginateRuns(runs, view.page + 1, view.pageSize)
   const lines: RenderElement[] = [headerLine(table, view, page)]
   if (runs.problem) lines.push(messageLine(table, columns, staleText(runs.at, runs.problem, view.nowMs), view.palette.pending))
   if (page.rows.length === 0) lines.push(messageLine(table, columns, 'No workflow runs.'))

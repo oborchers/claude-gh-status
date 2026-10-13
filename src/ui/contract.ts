@@ -43,6 +43,8 @@ export type ListView = {
   list: PrList | null
   /** Zero-based page. */
   page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
   hideDrafts: boolean
   /** The key of the Button that holds the focus ring (`pr-<n>`); null until it is known. */
   focusedKey: string | null
@@ -131,6 +133,8 @@ export type TabsView = {
 export type IssuesView = {
   issues: IssueList | null
   page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
   focusedKey: string | null
   /** The viewer's login, for the groups. */
   viewer: string
@@ -144,6 +148,8 @@ export type IssuesView = {
 export type RunsView = {
   runs: RunList | null
   page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
   focusedKey: string | null
   nowMs: number
   columns: number

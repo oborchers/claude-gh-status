@@ -395,3 +395,13 @@ describe('renderRuns presses', () => {
     for (const button of buttons) expect(button.props.plain).toBe(true)
   })
 })
+
+describe('renderRuns page size', () => {
+  test('a smaller pageSize draws fewer runs and says so in the header', async ($, on) => {
+    const rig = createRig<RunsView, RepoHandlers>(on, renderRuns)
+    const ui = await rig.show($, 'terminal', viewOf(crowd(), { pageSize: 3 }), handlersFor([]), 100)
+    expect((await linesOf(ui))[0]).toBe('18 runs · 1 to 3 · page 1 of 6')
+    expect((await ui.findAll({ type: 'Button' })).filter((button) => /^run-\d+$/.test(String(button.key)))).toHaveLength(3)
+    await ui.unmount()
+  })
+})

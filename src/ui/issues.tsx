@@ -77,7 +77,7 @@ export function renderIssues(table: UiTable, view: IssuesView, handlers: RepoHan
     )
   }
 
-  const page = paginateIssues(groupIssues(issues.items, view.viewer), view.page + 1)
+  const page = paginateIssues(groupIssues(issues.items, view.viewer), view.page + 1, view.pageSize)
   const lines: RenderElement[] = [headerLine(table, view, issues, page)]
   if (issues.problem) lines.push(messageLine(table, columns, staleText(issues.at, issues.problem, view.nowMs), view.palette.pending))
   if (page.rows.length === 0) lines.push(messageLine(table, columns, 'No open issues.'))

@@ -18,6 +18,8 @@ import {
   paginateRuns,
   runAfter,
   runDelayMs,
+  runDrawnRows,
+  runPageSize,
   runReference,
   runRowCount,
   runsAfter,
@@ -602,5 +604,22 @@ describe('runReference', () => {
     expect(text).not.toContain('Commit:')
     expect(runReference({ kind: 'loading', at: AT, runId: 5 })).toBeNull()
     expect(runReference({ kind: 'error', at: AT, runId: 5, message: 'x' })).toBeNull()
+  })
+})
+
+describe('runPageSize', () => {
+  const list: RunList = { kind: 'list', at: '2026-10-12T11:59:00Z', location, account: { login: 'me', source: 'active' }, defaultBranch: 'main', main: [run(1), run(2)], branch: [], recent: Array.from({ length: 20 }, (_, at) => run(100 + at)) }
+
+  test('counts the headings of the groups on the page', () => {
+    expect(runDrawnRows(list, 0, 4)).toBe(4 * 3 + 1 + 4)
+    expect(runPageSize(list, 0, 17)).toBe(4)
+    expect(runPageSize(list, 0, 16)).toBe(3)
+    expect(runPageSize(list, 0, 1)).toBe(1)
+  })
+
+  test('is PAGE_SIZE without bodyRows and lastRunPage follows the size', () => {
+    expect(runPageSize(list, 0, undefined)).toBe(10)
+    expect(lastRunPage(list)).toBe(2)
+    expect(lastRunPage(list, 4)).toBe(5)
   })
 })

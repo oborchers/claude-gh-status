@@ -5,7 +5,7 @@
 // assignees and linked pull requests), MENTIONED_QUERY 1, ISSUE_DETAIL_QUERY 1.
 
 import type { Exec } from './gh'
-import { LIST_LIMIT, PAGE_SIZE, ask, asNum, asObj, asStr, failed, nodesOf, toRateLimit } from './list'
+import { LIST_LIMIT, PAGE_SIZE, ask, asNum, asObj, asStr, failed, fitPageSize, nodesOf, toRateLimit } from './list'
 import type { Failure } from './list'
 import type { AccountChoice, Issue, IssueComment, IssueGroup, IssueItem, IssueList, IssueSnapshot, LinkedPr, Problem, RateLimit, RepoLocation } from './model'
 import { SLUG_PATTERN, cleanStr } from './text'
@@ -221,18 +221,28 @@ export const ROWS_PER_ISSUE = 3
  * heading but the first, and 4 for the header, the footer and slack. At most 40.
  */
 export function issueRowCount(list: IssueList | null, page: number): number {
-  if (list === null || list.kind !== 'list') return 6
-  const shown = paginateIssues(groupIssues(list.items, list.account.login), page + 1)
+  return Math.min(40, Math.max(6, issueDrawnRows(list, page, PAGE_SIZE)))
+}
+
+/** Rows the issue list view draws for the zero-based `page` of `pageSize` items, uncapped (0 without a list). */
+export function issueDrawnRows(list: IssueList | null, page: number, pageSize: number, isPadded = false): number {
+  if (list === null || list.kind !== 'list') return 0
+  const shown = paginateIssues(groupIssues(list.items, list.account.login), page + 1, pageSize)
   const groups = new Set(shown.rows.map(row => row.group)).size
   // Per group: its heading (+1) and no blank after its last issue (-1); between groups, one blank.
-  const body = shown.rows.length * ROWS_PER_ISSUE + Math.max(0, groups - 1)
-  return Math.min(40, Math.max(6, body + 4))
+  const padding = isPadded ? Math.max(0, Math.min(pageSize, shown.total) - shown.rows.length) : 0
+  return (shown.rows.length + padding) * ROWS_PER_ISSUE + Math.max(0, groups - 1) + 4
+}
+
+/** The page size that makes the issue list fit `bodyRows` when the page starts at item `firstIndex`. */
+export function issuePageSize(list: IssueList | null, firstIndex: number, bodyRows: number | undefined): number {
+  return fitPageSize(size => issueDrawnRows(list, Math.floor(firstIndex / size), size, true), bodyRows)
 }
 
 /** The highest zero-based page of the issue list. */
-export function lastIssuePage(list: IssueList | null): number {
+export function lastIssuePage(list: IssueList | null, pageSize: number = PAGE_SIZE): number {
   if (list === null || list.kind !== 'list') return 0
-  return paginateIssues(groupIssues(list.items, list.account.login), 1).pageCount - 1
+  return paginateIssues(groupIssues(list.items, list.account.login), 1, pageSize).pageCount - 1
 }
 
 function issueSearch(location: RepoLocation, qualifiers: string): string | null {

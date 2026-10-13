@@ -1755,6 +1755,48 @@ describe('the list of open pull requests', () => {
     await ui.unmount()
   })
 
+  test('the page size follows the pane: n and p step in pages of the size that fits', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    // 15 rows of body: the tab row, then a heading and 3 items need 1 + 3 x 3 + 4 = 14.
+    const small = () => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, scroll: { offset: 0, bodyRows: 15 } } })
+    const ui = await small()
+    expect(await sees(ui, /30 open · 1 to 3 · page 1 of 10/)).toBe(true)
+    expect(await sees(ui, /#14578\b/)).toBe(true)
+    expect(await sees(ui, /#14577\b/)).toBe(false)
+    await ui.press({ key: 'list-next' })
+    expect(await sees(ui, /30 open · 4 to 6 · page 2 of 10/)).toBe(true)
+    expect(await sees(ui, /#14577\b/)).toBe(true)
+    await ui.press({ key: 'list-prev' })
+    expect(await sees(ui, /1 to 3 · page 1 of 10/)).toBe(true)
+    expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
+    for (let at = 0; at < 12; at += 1) {
+      if ((await ui.find({ key: 'list-next' })) !== undefined) await ui.press({ key: 'list-next' })
+    }
+    expect(await sees(ui, /28 to 30 · page 10 of 10/)).toBe(true)
+    expect(await ui.find({ key: 'list-next' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a pane that shrinks keeps the first visible item on the page', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const big = await showList($)
+    await big.press({ key: 'list-next' })
+    expect(await sees(big, /11 to 20 · page 2 of 3/)).toBe(true)
+    await big.unmount()
+    const ui = await $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, scroll: { offset: 0, bodyRows: 15 } } })
+    // Item 11 is index 10: pages of 3 put it on the page that shows 10 to 12.
+    expect(await sees(ui, /10 to 12 · page 4 of 10/)).toBe(true)
+    await ui.press({ key: 'list-next' })
+    expect(await sees(ui, /13 to 15 · page 5 of 10/)).toBe(true)
+    await ui.unmount()
+  })
+
   test('h hides the drafts and goes back to the first page', async ($, on) => {
     const world = listWorld(on)
     await start($, world)

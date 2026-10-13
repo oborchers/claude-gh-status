@@ -10,11 +10,11 @@ import { parseAccountConfig, resolveAccount } from '../src/accounts'
 import type { AccountMemory } from '../src/accounts'
 import { readLocation } from '../src/git'
 import { fetchJobs } from '../src/jobs'
-import { fetchIssue, fetchIssues, issueAfter, issueProblemOf, issueRowCount, issuesAfter, issuesProblemOf, lastIssuePage } from '../src/issues'
-import { COUNTS_POLL_MS, COUNTS_RETRY_MS, LIST_POLL_MS, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listRowCount, pollDelayMs } from '../src/list'
+import { fetchIssue, fetchIssues, issueAfter, issueProblemOf, issuePageSize, issueRowCount, issuesAfter, issuesProblemOf, lastIssuePage } from '../src/issues'
+import { COUNTS_POLL_MS, COUNTS_RETRY_MS, LIST_POLL_MS, PAGE_SIZE, fetchCounts, fetchList, lastPage, listAfter, listDelayMs, listPageSize, listRowCount, pollDelayMs, rebasePage } from '../src/list'
 import type { AccountChoice, IssueList, IssueSnapshot, ListCounts, MainStatus, MergeMethod, PaneTab, PendingAction, PrList, RateLimit, RepoLocation, RunList, RunSnapshot, Snapshot, TabState } from '../src/model'
 import { fetchPullRequest, fetchPullRequestByNumber } from '../src/query'
-import { MAIN_STATUS_POLL_MS, fetchMainStatus, fetchRun, fetchRuns, lastRunPage, runAfter, runDelayMs, runProblemOf, runReference, runRowCount, runsAfter, runsProblemOf } from '../src/runs'
+import { MAIN_STATUS_POLL_MS, fetchMainStatus, fetchRun, fetchRuns, lastRunPage, runAfter, runDelayMs, runPageSize, runProblemOf, runReference, runRowCount, runsAfter, runsProblemOf } from '../src/runs'
 import { createRefresher, etagsOf, mergeEtags, nextDelayMs } from '../src/scheduler'
 import type { RefreshReason, RefreshTarget, RefresherDeps, SchedulerConfig } from '../src/scheduler'
 import { deriveStatus } from '../src/status'
@@ -39,6 +39,36 @@ const PANE_ROWS_COLUMNS = 80
 
 /** The tab row every view of the pane draws first. */
 const TAB_ROW = 1
+
+/**
+ * Per tab, the page size the last render drew with (`shown`) and the size the stored page index
+ * counts in (`basis`). Render hooks cannot write state, so a resize leaves the stored page alone
+ * and the render rebases it onto `shown`; the next/previous handlers read both and write the
+ * page back in `shown` pages. Not persisted: after a reload both start at PAGE_SIZE.
+ */
+const pageFit: Record<'prs' | 'issues' | 'actions', { shown: number; basis: number }> = {
+  prs: { shown: PAGE_SIZE, basis: PAGE_SIZE },
+  issues: { shown: PAGE_SIZE, basis: PAGE_SIZE },
+  actions: { shown: PAGE_SIZE, basis: PAGE_SIZE },
+}
+
+/** The page size the pane's room allows for the page that starts where the stored page does, and the page index in it. */
+function fitTab(tab: 'prs' | 'issues' | 'actions', storedPage: number, bodyRows: number | undefined, sizeFor: (firstIndex: number, rows: number | undefined) => number): { pageSize: number; page: number } {
+  const fit = pageFit[tab]
+  const rows = bodyRows !== undefined && bodyRows > 0 ? Math.max(1, bodyRows - TAB_ROW) : undefined
+  const pageSize = sizeFor(Math.max(0, storedPage) * fit.basis, rows)
+  fit.shown = pageSize
+  return { pageSize, page: rebasePage(storedPage, fit.basis, pageSize) }
+}
+
+/** The page `step` away from the stored one, in pages of the size last shown, clamped to 0..last; records the new basis. */
+function stepPage(tab: 'prs' | 'issues' | 'actions', storedPage: number, step: 1 | -1, lastFor: (pageSize: number) => number): number {
+  const fit = pageFit[tab]
+  const size = fit.shown
+  const next = Math.min(Math.max(rebasePage(storedPage, fit.basis, size) + step, 0), lastFor(size))
+  fit.basis = size
+  return next
+}
 
 /** Rows asked for an issue's or run's detail: the body is long, the engine clamps and the person can drag. */
 const ISSUE_DETAIL_ROWS = 30
@@ -238,11 +268,15 @@ async function readView($: EngineInterface, columns: number, surface: 'terminal'
   return { snapshot, status, isSelected, jobs, nowMs, columns, surface, palette, outcome, pending: isElsewhere ? null : stored, hasPending: stored !== null, counts, mainStatus }
 }
 
-async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette): Promise<ListView> {
+async function readListView($: EngineInterface, columns: number, surface: 'terminal' | 'desktop', palette: Palette, bodyRows?: number): Promise<ListView> {
+  const list = await read($, listState)
+  const hideDrafts = await read($, listHideDraftsState)
+  const fit = fitTab('prs', await read($, listPageState), bodyRows, (first, rows) => listPageSize(list, first, hideDrafts, rows))
   return {
-    list: await read($, listState),
-    page: await read($, listPageState),
-    hideDrafts: await read($, listHideDraftsState),
+    list,
+    page: fit.page,
+    pageSize: fit.pageSize,
+    hideDrafts,
     focusedKey: await read($, paneFocusState),
     counts: await read($, countsState),
     nowMs: await $.clock.now(),
@@ -274,12 +308,12 @@ const issueNumberOf = (snapshot: IssueSnapshot): number => (snapshot.kind === 'i
 const runIdOf = (snapshot: RunSnapshot): number => (snapshot.kind === 'run' ? snapshot.run.id : snapshot.runId)
 
 /** What the active tab draws below the tab row. */
-async function readTabBody($: EngineInterface, table: UiTable, columns: number, surface: 'terminal' | 'desktop', palette: Palette, live: Live | null): Promise<RenderElement> {
+async function readTabBody($: EngineInterface, table: UiTable, columns: number, surface: 'terminal' | 'desktop', palette: Palette, live: Live | null, bodyRows?: number): Promise<RenderElement> {
   const tab = await read($, paneTabState)
   const nowMs = await $.clock.now()
   if (tab === 'prs') {
     if ((await read($, paneViewState)) === 'list') {
-      const listView = await readListView($, columns, surface, palette)
+      const listView = await readListView($, columns, surface, palette, bodyRows)
       return renderList(table, listView, listHandlersFor($, live))
     }
     const view = await readView($, columns, surface, palette, 'pane')
@@ -292,7 +326,8 @@ async function readTabBody($: EngineInterface, table: UiTable, columns: number, 
       const issues = await read($, issuesState)
       const branch = await read($, snapshotState)
       const viewer = issues !== null && issues.kind === 'list' ? issues.account.login : 'account' in branch ? branch.account.login : ''
-      const view: IssuesView = { issues, page: state.page, focusedKey: state.focus, viewer, nowMs, columns, surface, palette }
+      const fit = fitTab('issues', state.page, bodyRows, (first, rows) => issuePageSize(issues, first, rows))
+      const view: IssuesView = { issues, page: fit.page, pageSize: fit.pageSize, focusedKey: state.focus, viewer, nowMs, columns, surface, palette }
       return renderIssues(table, view, handlers)
     }
     const stored = await read($, issueSnapshotState)
@@ -302,7 +337,9 @@ async function readTabBody($: EngineInterface, table: UiTable, columns: number, 
   }
   const state = await read($, actionsTabState)
   if (state.level === 'list' || state.selected === null) {
-    const view: RunsView = { runs: await read($, runsState), page: state.page, focusedKey: state.focus, nowMs, columns, surface, palette }
+    const runs = await read($, runsState)
+    const fit = fitTab('actions', state.page, bodyRows, (first, rows) => runPageSize(runs, first, rows))
+    const view: RunsView = { runs, page: fit.page, pageSize: fit.pageSize, focusedKey: state.focus, nowMs, columns, surface, palette }
     return renderRuns(table, view, handlers)
   }
   const stored = await read($, runSnapshotState)
@@ -624,8 +661,10 @@ async function openList($: EngineInterface, live: Live | null): Promise<string> 
 }
 
 async function setPage($: EngineInterface, step: 1 | -1): Promise<void> {
-  const last = lastPage(await read($, listState), await read($, listHideDraftsState))
-  await update($, listPageState, (page: number) => Math.min(Math.max(page + step, 0), last))
+  const list = await read($, listState)
+  const hideDrafts = await read($, listHideDraftsState)
+  const stored = await read($, listPageState)
+  await update($, listPageState, () => stepPage('prs', stored, step, size => lastPage(list, hideDrafts, size)))
 }
 
 async function toggleDrafts($: EngineInterface): Promise<void> {
@@ -771,8 +810,11 @@ async function tabBack($: EngineInterface, live: Live | null): Promise<boolean> 
 async function pageTab($: EngineInterface, step: 1 | -1): Promise<void> {
   const tab = await read($, paneTabState)
   if (tab === 'prs') return
-  const last = tab === 'issues' ? lastIssuePage(await read($, issuesState)) : lastRunPage(await read($, runsState))
-  await patchTabState($, tab, state => ({ ...state, page: Math.min(Math.max(state.page + step, 0), last), focus: null }))
+  const issues = await read($, issuesState)
+  const runs = await read($, runsState)
+  const stored = (await readTabState($, tab)).page
+  const next = stepPage(tab, stored, step, size => (tab === 'issues' ? lastIssuePage(issues, size) : lastRunPage(runs, size)))
+  await patchTabState($, tab, state => ({ ...state, page: next, focus: null }))
 }
 
 /** Re-runs the failed jobs of the run the detail shows; no confirmation, like the pull request's `t`. */
@@ -1502,7 +1544,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           {tabs}
-          {await readTabBody($, table, columns, surface, palette, live)}
+          {await readTabBody($, table, columns, surface, palette, live, e.props.scroll.bodyRows)}
         </Box>
       )
     } catch {
