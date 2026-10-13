@@ -10,6 +10,8 @@ import {
   fetchIssues,
   groupIssues,
   issueAfter,
+  issueDrawnRows,
+  issuePageSize,
   issueProblemOf,
   issueRowCount,
   issuesAfter,
@@ -537,5 +539,26 @@ describe('issueAfter', () => {
   test('a permanent failure replaces the snapshot', () => {
     expect(issueAfter(snapshot, failure('auth', 'Bad credentials'), NOW, location, account)).toEqual({ kind: 'error', at: NOW, number: 7, message: 'Bad credentials' })
     expect(issueProblemOf({ kind: 'loading', at: NOW, number: 7 })).toBeNull()
+  })
+})
+
+describe('issuePageSize', () => {
+  const issues = listOf(Array.from({ length: 30 }, (_, at) => item(at + 1)))
+
+  test('fits the drawn rows into bodyRows and keeps at least one issue', () => {
+    expect(issueDrawnRows(issues, 0, 4)).toBe(4 * 3 + 4)
+    expect(issuePageSize(issues, 0, 16)).toBe(4)
+    expect(issuePageSize(issues, 0, 15)).toBe(3)
+    expect(issuePageSize(issues, 0, 2)).toBe(1)
+  })
+
+  test('is PAGE_SIZE without bodyRows', () => {
+    expect(issuePageSize(issues, 0, undefined)).toBe(10)
+    expect(issuePageSize(issues, 0, 0)).toBe(10)
+  })
+
+  test('lastIssuePage follows the page size', () => {
+    expect(lastIssuePage(issues)).toBe(2)
+    expect(lastIssuePage(issues, 4)).toBe(7)
   })
 })

@@ -655,3 +655,17 @@ describe('renderList presses', () => {
     for (const button of buttons.filter((candidate) => String(candidate.key).startsWith('pr-'))) expect(button.props.plain).toBe(true)
   })
 })
+
+describe('renderList page size', () => {
+  test('a smaller pageSize draws fewer items and says so in the header', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.list($, 'terminal', { ...viewOf(listOf(crowd()), 100), pageSize: 3 }, handlersFor([]))
+    const lines = await linesOf(ui)
+    expect(lines[0]).toBe('30 open · 1 to 3 · page 1 of 10 · @me')
+    expect((await ui.findAll({ type: 'Button' })).filter((button) => /^pr-\d+$/.test(String(button.key)))).toHaveLength(3)
+    await ui.unmount()
+    const second = await rig.list($, 'terminal', { ...viewOf(listOf(crowd()), 100), pageSize: 3, page: 1 }, handlersFor([]))
+    expect((await linesOf(second))[0]).toBe('30 open · 4 to 6 · page 2 of 10 · @me')
+    await second.unmount()
+  })
+})

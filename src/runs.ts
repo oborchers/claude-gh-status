@@ -11,7 +11,7 @@ import { parseIncludeOutput } from './etag'
 import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
 import { fetchJobs } from './jobs'
-import { PAGE_SIZE, pollDelayMs } from './list'
+import { PAGE_SIZE, fitPageSize, pollDelayMs } from './list'
 import type { AccountChoice, JobDetail, MainStatus, Problem, RateLimit, RepoLocation, RunGroup, RunItem, RunList, RunSnapshot } from './model'
 import { checkStateFrom } from './query'
 import { cleanStr } from './text'
@@ -287,18 +287,28 @@ export function paginateRuns(groups: Record<RunGroup, readonly RunItem[]>, page:
  * At least 6, at most 40.
  */
 export function runRowCount(list: RunList | null, page: number): number {
-  if (list === null || list.kind !== 'list') return 6
-  const shown = paginateRuns(list, page + 1)
+  return Math.min(40, Math.max(6, runDrawnRows(list, page, PAGE_SIZE)))
+}
+
+/** Rows the Actions list view draws for the zero-based `page` of `pageSize` items, uncapped (0 without a list). */
+export function runDrawnRows(list: RunList | null, page: number, pageSize: number, isPadded = false): number {
+  if (list === null || list.kind !== 'list') return 0
+  const shown = paginateRuns(list, page + 1, pageSize)
   const groups = new Set(shown.rows.map(row => row.group)).size
   // Per group: its heading (+1) and no blank after its last run (-1); between groups, one blank.
-  const body = shown.rows.length * ROWS_PER_RUN + Math.max(0, groups - 1)
-  return Math.min(40, Math.max(6, body + 4))
+  const padding = isPadded ? Math.max(0, Math.min(pageSize, shown.total) - shown.rows.length) : 0
+  return (shown.rows.length + padding) * ROWS_PER_RUN + Math.max(0, groups - 1) + 4
+}
+
+/** The page size that makes the Actions list fit `bodyRows` when the page starts at item `firstIndex`. */
+export function runPageSize(list: RunList | null, firstIndex: number, bodyRows: number | undefined): number {
+  return fitPageSize(size => runDrawnRows(list, Math.floor(firstIndex / size), size, true), bodyRows)
 }
 
 /** The highest zero-based page of the run list. */
-export function lastRunPage(list: RunList | null): number {
+export function lastRunPage(list: RunList | null, pageSize: number = PAGE_SIZE): number {
   if (list === null || list.kind !== 'list') return 0
-  return paginateRuns(list, 1).pageCount - 1
+  return paginateRuns(list, 1, pageSize).pageCount - 1
 }
 
 /** States that make a workflow count as failing on the default branch. Cancelled does not. */

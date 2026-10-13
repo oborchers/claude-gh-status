@@ -148,7 +148,7 @@ export function renderList(table: UiTable, view: ListView, handlers: ListHandler
   }
 
   const viewer = list.account.login
-  const page = paginate(groupItems(list.items, viewer), view.page + 1, PAGE_SIZE, view.hideDrafts)
+  const page = paginate(groupItems(list.items, viewer), view.page + 1, view.pageSize ?? PAGE_SIZE, view.hideDrafts)
   const lines: RenderElement[] = [headerLine(table, view, list, page)]
   if (list.problem) {
     const text = `showing last data from ${relativeTime(list.at, view.nowMs)}, ${unavailableText(list.problem)}, ${retryText(list.problem, view.nowMs)}`

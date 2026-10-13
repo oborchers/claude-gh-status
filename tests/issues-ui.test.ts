@@ -375,3 +375,16 @@ describe('renderIssues presses', () => {
     for (const button of buttons) expect(button.props.plain).toBe(true)
   })
 })
+
+describe('renderIssues page size', () => {
+  test('a smaller pageSize draws fewer issues and says so in the header', async ($, on) => {
+    const rig = rigFor(on)
+    const ui = await show(rig, $, 'terminal', viewOf(listOf(crowd()), { pageSize: 3 }))
+    expect((await linesOf(ui))[0]).toBe('20 open · 1 to 3 · page 1 of 7 · @me')
+    expect((await ui.findAll({ type: 'Button' })).filter((button) => /^issue-\d+$/.test(String(button.key)))).toHaveLength(3)
+    await ui.unmount()
+    const second = await show(rig, $, 'terminal', viewOf(listOf(crowd()), { pageSize: 3, page: 2 }))
+    expect((await linesOf(second))[0]).toBe('20 open · 7 to 9 · page 3 of 7 · @me')
+    await second.unmount()
+  })
+})
