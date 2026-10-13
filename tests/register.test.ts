@@ -47,6 +47,8 @@ type World = {
   mutationAnswer: ReturnType<typeof done>
   /** What `gh run rerun` answers, per call. */
   rerunAnswer: (argv: readonly string[]) => ReturnType<typeof done>
+  /** The conclusion `GET actions/runs/900` answers. */
+  runConclusion: string
   filled: { text: string; mode?: string }[]
   clock: ReturnType<typeof mock.clock>
   /** The raw pull request nodes the list query answers. */
@@ -85,6 +87,9 @@ function answer(world: World, argv: readonly string[]) {
   if (args[0] === 'auth' && args[1] === 'token') return done(0, 'tok\n')
   if (args[0] === 'run' && args[1] === 'rerun') return world.rerunAnswer(argv)
   if (args[0] === 'run' && args[1] === 'view') return done(0, JSON.stringify(jobsRunning))
+  if (args[0] === 'api' && args[1] === 'repos/cli/cli/actions/runs/900') {
+    return done(0, JSON.stringify({ id: 900, run_number: 12, workflow_id: 3, name: 'CI', head_branch: 'feat/things', event: 'push', status: 'completed', conclusion: world.runConclusion, head_sha: 'a'.repeat(40), created_at: '2026-10-12T07:55:00Z', updated_at: '2026-10-12T07:59:00Z', html_url: 'https://github.com/cli/cli/actions/runs/900', run_attempt: 1 }))
+  }
   if (args[0] === 'api' && args.includes('-i')) return done(0, 'HTTP/2.0 200 OK\netag: W/"stable"\n\n{}')
   if (args[0] === 'pr' && args[1] === 'merge') {
     if (world.afterMerge !== null) world.fixture = world.afterMerge
@@ -147,6 +152,7 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     mergeAnswer: done(0, 'merged\n'),
     mutationAnswer: done(0, '{"data":{}}'),
     rerunAnswer: () => done(0),
+    runConclusion: 'failure',
     filled: [],
     clock: mock.clock(on, { now: NOW }),
     listNodes: [],
@@ -1266,6 +1272,33 @@ describe('re-run failed jobs', () => {
     await pane.press({ key: 'rerun-failed' })
     await world.clock.settle()
     expect(reruns(world).length).toBe(afterFirst * 2)
+    await pane.unmount()
+  })
+})
+
+describe('re-run from the Actions run detail', () => {
+  const openRunDetail = async ($: Engine, world: World) => {
+    await start($, world)
+    await runPr($, 'run 900')
+    await world.clock.settle()
+    return showPane($)
+  }
+
+  test('a failed run re-runs its failed jobs', async ($, on) => {
+    const world = setup(on, prGreen)
+    const pane = await openRunDetail($, world)
+    await pane.press({ key: 'run-rerun' })
+    await world.clock.settle()
+    expect(reruns(world)).toEqual([['gh', 'run', 'rerun', '900', '--failed', '-R', 'cli/cli']])
+    await pane.unmount()
+  })
+
+  test('a run that is not failed offers no re-run and runs nothing', async ($, on) => {
+    const world = setup(on, prGreen)
+    world.runConclusion = 'success'
+    const pane = await openRunDetail($, world)
+    expect(await pane.find({ key: 'run-rerun' })).toBeUndefined()
+    expect(reruns(world)).toEqual([])
     await pane.unmount()
   })
 })

@@ -11,6 +11,7 @@
 import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
 import { activityAt } from './status'
+import { SLUG_PATTERN, cleanStr } from './text'
 import type {
   Check,
   CheckState,
@@ -77,7 +78,7 @@ export const PR_DETAIL_QUERY = `query($id: ID!) {
       latestReviews(first: 20) { nodes { author { login } state submittedAt } }
       reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } } } }
       comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }
-      closingIssuesReferences(first: 5) { nodes { number title state } }
+      closingIssuesReferences(first: 5) { nodes { number title state repository { nameWithOwner } } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { nodes {
         ${CONTEXT_FIELDS}
       } } } } } }
@@ -214,12 +215,12 @@ export function statusContextState(state: unknown): CheckState {
 
 function toCheck(node: Obj): Check | null {
   if (node.__typename === 'CheckRun') {
-    const name = asStr(node.name)
+    const name = cleanStr(node.name)
     if (name === null) return null
     const run = asObj(asObj(asObj(node.checkSuite)?.workflowRun))
     return {
       name,
-      workflow: asStr(asObj(run?.workflow)?.name),
+      workflow: cleanStr(asObj(run?.workflow)?.name),
       state: checkStateFrom(node.status, node.conclusion),
       isRequired: asBool(node.isRequired),
       startedAt: asStr(node.startedAt),
@@ -230,7 +231,7 @@ function toCheck(node: Obj): Check | null {
     }
   }
   if (node.__typename === 'StatusContext') {
-    const name = asStr(node.context)
+    const name = cleanStr(node.context)
     if (name === null) return null
     const state = statusContextState(node.state)
     return {
@@ -300,7 +301,7 @@ function toCommentRef(node: Obj | undefined): CommentRef | null {
   if (createdAt === null || url === null) return null
   const lastEditedAt = asStr(node.lastEditedAt)
   const isEdited = lastEditedAt !== null && Date.parse(lastEditedAt) - Date.parse(createdAt) >= EDIT_GRACE_MS
-  return { author: asStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: isEdited ? lastEditedAt : null, url }
+  return { author: cleanStr(asObj(node.author)?.login) ?? 'ghost', createdAt, editedAt: isEdited ? lastEditedAt : null, url }
 }
 
 /**
@@ -322,19 +323,19 @@ function toReviewRequest(node: Obj): ReviewRequest | null {
   const reviewer = asObj(node.requestedReviewer)
   if (reviewer === null) return null
   if (reviewer.__typename === 'Team') {
-    const slug = asStr(reviewer.slug)
+    const slug = cleanStr(reviewer.slug)
     if (slug === null) return null
-    const org = asStr(asObj(reviewer.organization)?.login)
+    const org = cleanStr(asObj(reviewer.organization)?.login)
     return { reviewer: org === null ? slug : `${org}/${slug}`, isTeam: true }
   }
-  const login = asStr(reviewer.login)
+  const login = cleanStr(reviewer.login)
   return login === null ? null : { reviewer: login, isTeam: false }
 }
 
 function toReview(node: Obj): Review {
   const state = lower(node.state)
   return {
-    author: asStr(asObj(node.author)?.login) ?? 'ghost',
+    author: cleanStr(asObj(node.author)?.login) ?? 'ghost',
     state: REVIEW_STATES.find(known => known === state) ?? 'commented',
     submittedAt: asStr(node.submittedAt),
   }
@@ -405,12 +406,19 @@ function allowedMethods(repository: Obj | null): MergeMethod[] {
 }
 
 /** The issues a pull request closes when merged; entries without a number are dropped. */
-function linkedIssuesOf(raw: unknown): { number: number; title: string; state: 'open' | 'closed' }[] {
-  const issues: { number: number; title: string; state: 'open' | 'closed' }[] = []
+function linkedIssuesOf(raw: unknown): { number: number; title: string; state: 'open' | 'closed'; repo?: string }[] {
+  const issues: { number: number; title: string; state: 'open' | 'closed'; repo?: string }[] = []
   for (const node of nodesOf(raw)) {
     const number = asNum(node.number)
     if (number === null) continue
-    issues.push({ number, title: asStr(node.title) ?? '', state: lower(node.state) === 'closed' ? 'closed' : 'open' })
+    const slug = asStr(asObj(node.repository)?.nameWithOwner)
+    const repo = slug !== null && SLUG_PATTERN.test(slug) ? slug : null
+    issues.push({
+      number,
+      title: cleanStr(node.title) ?? '',
+      state: lower(node.state) === 'closed' ? 'closed' : 'open',
+      ...(repo === null ? {} : { repo }),
+    })
   }
   return issues
 }
@@ -449,15 +457,15 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     id,
     number,
     state: PR_STATES[asStr(node.state) ?? ''] ?? PR_STATES[chosen.state] ?? 'open',
-    title: asStr(node.title) ?? '',
+    title: cleanStr(node.title) ?? '',
     url: asStr(node.url) ?? '',
     isPrivate: repository?.isPrivate === true,
     isDraft: asBool(node.isDraft),
-    author: asStr(asObj(node.author)?.login),
-    mergedBy: asStr(asObj(node.mergedBy)?.login),
+    author: cleanStr(asObj(node.author)?.login),
+    mergedBy: cleanStr(asObj(node.mergedBy)?.login),
     mergedAt: asStr(node.mergedAt),
     closedAt: asStr(node.closedAt),
-    headRefName: asStr(node.headRefName) ?? location.branch ?? '',
+    headRefName: cleanStr(node.headRefName) ?? location.branch ?? '',
     headOid: asStr(node.headRefOid) ?? asStr(commit?.oid) ?? '',
     baseRefName: asStr(node.baseRefName) ?? '',
     mergeable: MERGEABLE[asStr(node.mergeable) ?? ''] ?? 'unknown',

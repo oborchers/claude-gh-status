@@ -184,6 +184,22 @@ describe('the issue detail', () => {
     expect(calls).toEqual(['pr 9'])
   })
 
+  test('a linked pull request of another repository is dim text with its slug, never a button', async ($, on) => {
+    const rig = createRig(on)
+    const calls: string[] = []
+    const linkedPrs = [
+      { number: 8, title: 'Here', state: 'open' as const, repo: 'ACME/App' },
+      { number: 9, title: 'There', state: 'merged' as const, repo: 'evil/fork' },
+      { number: 10, title: 'Unknown', state: 'open' as const },
+    ]
+    const ui = await rig.draw($, 'terminal', viewOf(snapshotOf(issueOf({ linkedPrs }))), handlersFor(calls))
+    expect((await keysOf(ui)).filter((key) => key.startsWith('linked-pr-'))).toEqual(['linked-pr-8', 'linked-pr-10'])
+    const text = await textOf(ui)
+    expect(text).toContain('evil/fork#9 There (merged)')
+    expect(text).toContain('#8 Here')
+    expect(text).not.toContain('ACME/App#8')
+  })
+
   test('draws no linked pull request section without any', async ($, on) => {
     const rig = createRig(on)
     const ui = await rig.draw($, 'terminal', viewOf(snapshotOf(issueOf())), handlersFor([]))

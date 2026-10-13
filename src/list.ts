@@ -9,6 +9,7 @@ import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
 import type { AccountChoice, ListChecks, ListCounts, ListGroup, ListItem, PrList, Problem, RateLimit, RepoLocation, ReviewDecision } from './model'
 import { backoffMs, isTransient, reasonOf } from './scheduler'
+import { cleanStr } from './text'
 
 /** Most pull requests one list read returns; a repository with more is truncated. */
 export const LIST_LIMIT = 100
@@ -195,7 +196,7 @@ function toItem(node: Obj, requestedNumbers: ReadonlySet<number>, viewer: string
   if (id === null || number === null) return null
   const labels: { name: string; color: string }[] = []
   for (const label of nodesOf(node.labels)) {
-    const name = asStr(label.name)
+    const name = cleanStr(label.name)
     if (name !== null) labels.push({ name, color: asStr(label.color) ?? '' })
   }
   const rollup = asObj(nodesOf(node.commits)[0]?.commit)?.statusCheckRollup
@@ -203,10 +204,10 @@ function toItem(node: Obj, requestedNumbers: ReadonlySet<number>, viewer: string
   return {
     id,
     number,
-    title: asStr(node.title) ?? '',
+    title: cleanStr(node.title) ?? '',
     url: asStr(node.url) ?? '',
     isDraft: node.isDraft === true,
-    author: asStr(asObj(node.author)?.login),
+    author: cleanStr(asObj(node.author)?.login),
     createdAt: asStr(node.createdAt) ?? '',
     labels,
     reviewDecision: REVIEW_DECISIONS[asStr(node.reviewDecision) ?? ''] ?? null,

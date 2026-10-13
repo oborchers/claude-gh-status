@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { CommandInfo, EngineInterface, PluginOptions, Register, RenderElement, RenderSurface, Timer, UiOpenResult } from 'claude-code'
 
-import { CHANGES_NEED_TEXT, RECHECK_FAILED, RULES_CHANGED, TEXT_CHANGED, availableActions, bypassedRules, buildPending, ciReference, clampReviewText, confirmStep, execute, executeRerun, isReviewTextMissing, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
+import { CHANGES_NEED_TEXT, RECHECK_FAILED, RULES_CHANGED, TEXT_CHANGED, availableActions, bypassedRules, buildPending, canRerunRun, ciReference, clampReviewText, confirmStep, execute, executeRerun, isReviewTextMissing, isTooEarly, repoSlug, rerunnableRunIds, transitionToastPrefix, withMethod } from '../src/actions'
 import type { ActionKind } from '../src/actions'
 import { fastCheck } from '../src/etag'
 import { runGh, tokenFor } from '../src/gh'
@@ -781,6 +781,7 @@ async function rerunRun($: EngineInterface, live: Live | null, runId: number): P
   try {
     const snapshot = await read($, runSnapshotState)
     if (snapshot === null || snapshot.kind !== 'run' || snapshot.run.id !== runId) return 'That run is not loaded.'
+    if (!canRerunRun(snapshot.run.state)) return 'Only a failed or timed-out run can be re-run.'
     const exec: Exec = (argv, init) => $.process.run(argv, init)
     const summary = await executeRerun(exec, snapshot.account.login, snapshot.location, [runId])
     const label = `Run #${snapshot.run.runNumber} ${snapshot.run.name}`

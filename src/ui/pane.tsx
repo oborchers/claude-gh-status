@@ -3,9 +3,9 @@
 import type { RenderElement } from 'claude-code'
 
 import { availableActions, rerunnableRunIds } from '../actions'
-import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
+import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, RepoLocation, ReviewThread, Snapshot, Status } from '../model'
 import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
-import { cellWidth, count, headingLine, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
+import { cellWidth, count, headingLine, isForeignRepo, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
@@ -376,16 +376,17 @@ function pipelineSection(table: UiTable, view: View, handlers: Handlers, pr: Pul
 }
 
 /** The `Linked issues` section: a plain Button per issue the pull request closes (plain text while a confirmation waits); null when there are none. */
-function linkedIssuesSection(table: UiTable, view: View, handlers: Handlers, pr: PullRequest): RenderElement[] | null {
+function linkedIssuesSection(table: UiTable, view: View, handlers: Handlers, pr: PullRequest, location: RepoLocation): RenderElement[] | null {
   const { Button, Text } = table
   const issues = pr.linkedIssues ?? []
   if (issues.length === 0) return null
   const rows: RenderElement[] = [heading(table, 'Linked issues', view.columns)]
   const { openLinkedIssue } = handlers
   issues.forEach((issue) => {
-    const label = truncate(`#${issue.number} ${issue.title}`, view.columns)
-    const dim = issue.state === 'closed' ? true : undefined
-    if (openLinkedIssue === undefined || isConfirming(view)) {
+    const isForeign = isForeignRepo(issue.repo, location)
+    const label = truncate(`${isForeign ? issue.repo : ''}#${issue.number} ${issue.title}`, view.columns)
+    const dim = issue.state === 'closed' || isForeign ? true : undefined
+    if (isForeign || openLinkedIssue === undefined || isConfirming(view)) {
       rows.push(<Text dimColor={dim} wrap="truncate-end">{label}</Text>)
     } else {
       rows.push(
@@ -598,7 +599,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
   const { pr } = snapshot
   const queueRows = queueSection(table, view, handlers, pr)
   const queueBlock = queueRows === null ? null : <Box flexDirection="column">{queueRows}</Box>
-  const linkedRows = linkedIssuesSection(table, view, handlers, pr)
+  const linkedRows = linkedIssuesSection(table, view, handlers, pr, snapshot.location)
   const linkedBlock = linkedRows === null ? null : <Box flexDirection="column">{linkedRows}</Box>
   return (
     <Box flexDirection="column" gap={1}>
