@@ -351,7 +351,7 @@ function rowsOf(node: unknown): string[] {
   const children = element.children ?? []
   if (element.type === 'Button' || element.type === 'Link') {
     const text = children.length > 0 ? children.flatMap(rowsOf).join('') : String(props.label ?? '')
-    return [props.hotkey !== undefined && children.length === 0 ? `${String(props.hotkey)}: ${text}` : text]
+    return [props.hotkey !== undefined && props.plain === true ? `${String(props.hotkey)}: ${text}` : text]
   }
   const parts = children.map((child) => {
     const margin = Number((child as Node).props?.marginLeft ?? 0)
@@ -1462,6 +1462,27 @@ describe('the list entry points', () => {
     }
   })
 
+  test('the PR header title (picked: pr-N, branch: pr-anchor) is a plain Button around one monochrome Text, no swap, no hover, no head- Box', async ($, on) => {
+    const rig = createRig(on)
+    type Piece = { props?: Record<string, unknown>; hover?: unknown }
+    const cases = [
+      { isSelected: true, key: 'pr-42' },
+      { isSelected: false, key: 'pr-anchor' },
+    ]
+    for (const { isSelected, key } of cases) {
+      const base = { ...prView({ number: 42, title: 'Calm title', checks: [makeCheck()] }, 80), isSelected }
+      const ui = await rig.pane($, 'terminal', base, handlersFor([], { back: () => {}, openList: () => {} }))
+      const button = (await ui.find({ key })) as { props: Record<string, unknown>; children: Piece[] }
+      expect(button.props.label).toContain('#42 Calm title')
+      expect(button.children).toHaveLength(1)
+      expect(button.children[0]?.props?.color).toBeUndefined()
+      expect(button.children[0]?.props?.backgroundColor).toBeUndefined()
+      expect(button.children[0]).not.toHaveProperty('hover')
+      expect(await ui.find({ key: `head-${key}` })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
   test('the branch PR header keeps l: all PRs; both navigations are hidden while a confirmation waits', async ($, on) => {
     const rig = createRig(on)
     const plain = await rig.pane($, 'terminal', prView({ number: 42, checks: [makeCheck()] }, 80), handlersFor([], { openList: () => {}, back: () => {} }))
@@ -1762,6 +1783,187 @@ describe('keys of the confirmation do not collide', () => {
       const bandKeys = hotkeysOf(await band.findAll({ type: 'Button' }))
       expect(new Set(bandKeys).size).toBe(bandKeys.length)
       await band.unmount()
+    }
+  })
+})
+
+describe('the pane: linked issues and workflow runs', () => {
+  const linked = [
+    { number: 7, title: 'Crash on start', state: 'open' as const },
+    { number: 9, title: 'Old report', state: 'closed' as const },
+  ]
+  const runChecks = [
+    makeCheck({ name: 'lint', workflow: 'CI', state: 'failure', runId: 70, jobId: 1, url: 'https://ci/lint' }),
+    makeCheck({ name: 'unit', workflow: 'CI', state: 'failure', runId: 70, jobId: 2 }),
+    makeCheck({ name: 'deploy', workflow: 'Deploy', state: 'success', runId: 71, jobId: 3 }),
+    makeCheck({ name: 'docs', workflow: 'Docs', state: 'success', runId: 72, jobId: 4 }),
+  ]
+  const pendingView = (view: View, kind: PendingAction['kind']): View => {
+    const pending = buildPending(kind, view.snapshot, undefined, 0, 'x')
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { ...view, pending }
+  }
+  const full = (extra: Partial<Handlers> = {}) => handlersFor([], { openLinkedIssue: () => {}, openRun: () => {}, ...extra })
+  const runKeys = async (ui: Mounted) => (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('run-'))
+
+  test('draws a Linked issues section with one keyed button per issue, closed ones dim', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: Calls = []
+      const ui = await rig.pane($, surface, prView({ linkedIssues: linked }, 80), handlersFor(calls, { openLinkedIssue: (n) => void calls.push(`issue ${n}`) }))
+      const text = await textOf(ui)
+      expect(text).toContain('── Linked issues')
+      expect(text).toContain('#7 Crash on start')
+      const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('linked-issue-'))
+      expect(keys).toEqual(['linked-issue-7', 'linked-issue-9'])
+      expect(JSON.stringify(await ui.find({ key: 'linked-issue-9' }))).toContain('"dimColor":true')
+      await ui.press({ key: 'linked-issue-9' })
+      expect(calls).toEqual(['issue 9'])
+      await ui.unmount()
+    }
+  })
+
+  test('a linked issue of another repository is dim text with its slug, never a button', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const issues = [
+      { number: 7, title: 'Here', state: 'open' as const, repo: 'ACME/app' },
+      { number: 9, title: 'There', state: 'open' as const, repo: 'evil/fork' },
+    ]
+    const ui = await rig.pane($, 'terminal', prView({ linkedIssues: issues }, 80), handlersFor(calls, { openLinkedIssue: (n) => void calls.push(`issue ${n}`) }))
+    const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('linked-issue-'))
+    expect(keys).toEqual(['linked-issue-7'])
+    const text = await textOf(ui)
+    expect(text).toContain('evil/fork#9 There')
+    expect(text).toContain('#7 Here')
+    expect(text).not.toContain('ACME/app#7')
+  })
+
+  test('draws no section without linked issues, and no button without the handler', async ($, on) => {
+    const rig = createRig(on)
+    const none = await rig.pane($, 'terminal', prView({ linkedIssues: [] }, 80), full())
+    expect(await textOf(none)).not.toContain('Linked issues')
+    const absent = await rig.pane($, 'terminal', prView({}, 80), full())
+    expect(await textOf(absent)).not.toContain('Linked issues')
+    const noHandler = await rig.pane($, 'terminal', prView({ linkedIssues: linked }, 80), handlersFor([]))
+    expect(await noHandler.find({ key: 'linked-issue-7' })).toBeUndefined()
+  })
+
+  test('offers a run button per failing run, named by its workflow', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const handlers = handlersFor(calls, { openRun: (id) => void calls.push(`run ${id}`) })
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks }, 80), handlers)
+    expect(await runKeys(ui)).toEqual(['run-70'])
+    expect(await textOf(ui)).toContain('open run: CI ↗')
+    await ui.press({ key: 'run-70' })
+    expect(calls).toEqual(['run 70'])
+  })
+
+  test('without a failure it offers every run when there are at most two, none for more', async ($, on) => {
+    const rig = createRig(on)
+    const two = runChecks.filter((check) => check.state === 'success')
+    const few = await rig.pane($, 'terminal', prView({ checks: two }, 80), full())
+    expect(await runKeys(few)).toEqual(['run-71', 'run-72'])
+    const three = [...two, makeCheck({ name: 'x', workflow: 'X', runId: 73 })]
+    const many = await rig.pane($, 'terminal', prView({ checks: three }, 80), full())
+    expect(await runKeys(many)).toEqual([])
+  })
+
+  test('skips the run buttons without the handler', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks }, 80), handlersFor([]))
+    expect(await runKeys(ui)).toEqual([])
+  })
+
+  test('both stay off the hotkeys and are hidden while a confirmation waits', async ($, on) => {
+    const rig = createRig(on)
+    const base = prView({ author: 'octocat', checks: [...runChecks, makeCheck()], linkedIssues: linked }, 100)
+    const idle = await rig.pane($, 'terminal', base, full())
+    const buttons = await idle.findAll({ type: 'Button' })
+    expect(buttons.filter((button) => /^(run|linked-issue)-/.test(String(button.key))).every((button) => button.props.hotkey === undefined)).toBe(true)
+    expect(hotkeysOf(buttons)).toEqual(['o', 'c', 'r'])
+    for (const view of [{ ...base, hasPending: true }, pendingView(base, 'approve')]) {
+      const ui = await rig.pane($, 'terminal', view, full())
+      const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key))
+      expect(keys.some((key) => /^(run|linked-issue)-/.test(key))).toBe(false)
+      await ui.unmount()
+    }
+  })
+
+  test('every button key is unique within the pane', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks, linkedIssues: linked }, 100), full({ requestMerge: () => {} }))
+    const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key))
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test('paneRowCount counts the section and the run lines', () => {
+    const base = prView({ checks: runChecks }, 80)
+    const withLinks = prView({ checks: runChecks, linkedIssues: linked }, 80)
+    expect(paneRowCount(withLinks)).toBe(paneRowCount(base) + 1 + linked.length + 1)
+    expect(paneRowCount(base, { openRun: () => {} })).toBe(paneRowCount(base) + 1)
+  })
+})
+
+describe('the main-branch segment of the band', () => {
+  const noPr: Snapshot = { kind: 'no-pr', at: '2026-01-01T00:00:00Z', location: makeLocation(), account: { login: 'me', source: 'active' } }
+  const red = { at: '2026-01-01T00:00:00Z', defaultBranch: 'main', worst: 'failure' as const, failing: [{ name: 'CI', runId: 7, url: 'https://github.com/o/r/actions/runs/7' }] }
+  const withMain = (view: View, mainStatus: View['mainStatus']): View => ({ ...view, mainStatus })
+  const withOpen = (calls: string[]) => handlersFor(calls, { openActions: () => void calls.push('openActions') })
+
+  test('shows "<branch> ✗ <name>" as a plain button on 3 that opens the Actions tab, with a PR and without', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      for (const base of [prView({ checks: [makeCheck()] }, 160), viewFor(noPr, 160)]) {
+        const calls: string[] = []
+        const ui = await rig.band($, surface, withMain(base, red), withOpen(calls))
+        expect(await textOf(ui)).toContain('main ✗ CI')
+        const button = await ui.find({ key: 'band-main' })
+        expect(button?.props).toMatchObject({ hotkey: '3' })
+        expect(JSON.stringify(await ui.find({ key: 'band-main' }))).toContain(`"color":${JSON.stringify(base.palette.failure)}`)
+        await ui.press({ key: 'band-main' })
+        expect(calls).toEqual(['openActions'])
+        await ui.unmount()
+      }
+    }
+  })
+
+  test('names the first failing workflow and counts the others', async ($, on) => {
+    const rig = createRig(on)
+    const failing = [...red.failing, { name: 'Lint', runId: 8, url: '' }, { name: 'Docs', runId: 9, url: '' }]
+    const ui = await rig.band($, 'terminal', withMain(viewFor(noPr, 160), { ...red, failing }), withOpen([]))
+    expect(await textOf(ui)).toContain('main ✗ CI +2')
+  })
+
+  test('is hidden when the branch is green, nothing is known or the view does not carry it', async ($, on) => {
+    const rig = createRig(on)
+    const green = { ...red, worst: 'success' as const, failing: [] }
+    for (const mainStatus of [green, null, undefined]) {
+      for (const base of [prView({ checks: [makeCheck()] }, 160), viewFor(noPr, 160)]) {
+        const ui = await rig.band($, 'terminal', withMain(base, mainStatus), withOpen([]))
+        expect(await ui.find({ key: 'band-main' })).toBeUndefined()
+        expect(await textOf(ui)).not.toContain('✗ CI')
+        await ui.unmount()
+      }
+    }
+  })
+
+  test('without the handler it is plain text, not a button', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.band($, 'terminal', withMain(viewFor(noPr, 160), red), handlersFor([]))
+    expect(await textOf(ui)).toContain('main ✗ CI')
+    expect(await ui.find({ key: 'band-main' })).toBeUndefined()
+  })
+
+  test('fits the row at every width', async ($, on) => {
+    const rig = createRig(on)
+    for (const columns of [160, 100, 80, 60, 40]) {
+      for (const base of [prView({ checks: [makeCheck()] }, columns), viewFor(noPr, columns)]) {
+        const ui = await rig.band($, 'terminal', withMain(base, red), withOpen([]))
+        for (const row of (await textOf(ui)).split('\n')) expect(cellWidth(row)).toBeLessThanOrEqual(columns)
+        await ui.unmount()
+      }
     }
   })
 })

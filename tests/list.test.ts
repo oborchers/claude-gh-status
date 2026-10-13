@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { forgetTokens } from '../src/gh'
 import type { Exec } from '../src/gh'
-import { COUNTS_QUERY, LIST_QUERY, PAGE_SIZE, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, groupItems, listDelayMs, listRowCount, normalizeList, paginate, pollDelayMs, requestedNumbersOf } from '../src/list'
+import { COUNTS_QUERY, LIST_QUERY, PAGE_SIZE, REQUESTED_QUERY, checksFrom, fetchCounts, fetchList, fitPageSize, groupItems, listDelayMs, listDrawnRows, listPageSize, listRowCount, normalizeList, paginate, pollDelayMs, rebasePage, requestedNumbersOf } from '../src/list'
 import type { ListItem, PrList, RepoLocation } from '../src/model'
 
 const location: RepoLocation = { cwd: '/work/app', branch: 'feature', owner: 'acme', repo: 'app', pinnedLogin: null }
@@ -74,6 +74,7 @@ describe('queries', () => {
     expect(REQUESTED_QUERY).toContain('$q')
     expect(COUNTS_QUERY).toContain('$yours')
     expect(COUNTS_QUERY).toContain('$requested')
+    expect(COUNTS_QUERY).toContain('$issues')
     expect(COUNTS_QUERY).toContain('first: 0')
   })
 })
@@ -477,17 +478,18 @@ describe('fetchList', () => {
 describe('fetchCounts', () => {
   test('reads the band numbers in one query', async () => {
     forgetTokens()
-    const body = { data: { open: { issueCount: 18 }, yours: { issueCount: 3 }, requested: { issueCount: 5 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
+    const body = { data: { open: { issueCount: 18 }, yours: { issueCount: 3 }, requested: { issueCount: 5 }, issues: { issueCount: 7 }, rateLimit: { cost: 1, remaining: 4000, resetAt: '2026-10-12T16:00:00Z' } } }
     const { exec, calls } = fakeExec([{ match: 'first: 0', stdout: JSON.stringify(body) }])
     const result = await fetchCounts(exec, location, 'me', () => '2026-10-12T12:00:00Z')
     expect(result.kind).toBe('ok')
     if (result.kind !== 'ok') return
-    expect(result.counts).toEqual({ open: 18, yours: 3, requested: 5, at: '2026-10-12T12:00:00Z' })
+    expect(result.counts).toEqual({ open: 18, yours: 3, requested: 5, issues: 7, at: '2026-10-12T12:00:00Z' })
     expect(result.rateLimit?.remaining).toBe(4000)
     const graphql = calls.filter(call => call.argv[1] === 'api')
     expect(graphql).toHaveLength(1)
     expect(graphql[0]?.argv).toContain('yours=repo:acme/app is:pr is:open author:@me')
     expect(graphql[0]?.argv).toContain('requested=repo:acme/app is:pr is:open review-requested:@me')
+    expect(graphql[0]?.argv).toContain('issues=repo:acme/app is:issue is:open')
     expect(graphql[0]?.argv).not.toContain('-F')
   })
 
@@ -495,7 +497,7 @@ describe('fetchCounts', () => {
     forgetTokens()
     const { exec } = fakeExec([{ match: 'first: 0', stdout: JSON.stringify({ data: {} }) }])
     const result = await fetchCounts(exec, location, 'me')
-    expect(result.kind === 'ok' && [result.counts.yours, result.counts.requested]).toEqual([0, 0])
+    expect(result.kind === 'ok' && [result.counts.yours, result.counts.requested, result.counts.issues]).toEqual([0, 0, 0])
   })
 
   test('passes a gh failure through', async () => {
@@ -513,5 +515,67 @@ describe('the poll delay', () => {
     expect(listDelayMs(null, { remaining: 499, resetAt: '2026-01-01T00:00:00Z' })).toBe(300_000)
     expect(pollDelayMs(15_000, { remaining: 0, resetAt: '2026-01-01T00:00:00Z' })).toBe(300_000)
     expect(pollDelayMs(900_000, { remaining: 0, resetAt: '2026-01-01T00:00:00Z' })).toBe(900_000)
+  })
+})
+
+describe('fitPageSize', () => {
+  const rows = (size: number) => size * 3 + 4
+
+  test('is the largest size whose rows fit exactly', () => {
+    expect(fitPageSize(rows, 19)).toBe(5)
+    expect(fitPageSize(rows, 18)).toBe(4)
+    expect(fitPageSize(rows, 34)).toBe(10)
+    expect(fitPageSize(rows, 100)).toBe(10)
+  })
+
+  test('is at least 1 however small the room', () => {
+    expect(fitPageSize(rows, 3)).toBe(1)
+    expect(fitPageSize(rows, 1)).toBe(1)
+  })
+
+  test('is the maximum without a usable bodyRows', () => {
+    expect(fitPageSize(rows, undefined)).toBe(PAGE_SIZE)
+    expect(fitPageSize(rows, 0)).toBe(PAGE_SIZE)
+    expect(fitPageSize(rows, Number.NaN)).toBe(PAGE_SIZE)
+    expect(fitPageSize(rows, -3)).toBe(PAGE_SIZE)
+  })
+})
+
+describe('listPageSize', () => {
+  const account = { login: 'me', source: 'active' } as const
+  const listOf = (items: ListItem[]): PrList => ({ kind: 'list', at: '2026-10-12T11:59:00Z', location, account, items, total: items.length, isTruncated: false })
+
+  test('counts the headings of the groups the page lands on', () => {
+    // 3 by me, then 12 others: a page of 5 spans two groups (two headings and a gap), a page of 3 only one.
+    const items = [...Array.from({ length: 3 }, (_, at) => item(at + 1, { author: 'me' })), ...Array.from({ length: 12 }, (_, at) => item(100 + at))]
+    const list = listOf(items)
+    expect(listDrawnRows(list, 0, false, 5)).toBe(5 * 3 + 1 + 4)
+    expect(listPageSize(list, 0, false, 20)).toBe(5)
+    expect(listPageSize(list, 0, false, 19)).toBe(4)
+    expect(listPageSize(list, 0, false, 14)).toBe(3)
+    // The page is aligned to its size: a page of 5 that starts at item 5 holds only the other group.
+    expect(listPageSize(list, 5, false, 19)).toBe(5)
+  })
+
+  test('a short last page does not allow a larger size', () => {
+    const list = listOf(Array.from({ length: 30 }, (_, at) => item(100 + at)))
+    expect(listPageSize(list, 0, false, 14)).toBe(3)
+    expect(listPageSize(list, 27, false, 14)).toBe(3)
+    // A list shorter than a page counts only its own items: two fit, so the size stays at the maximum.
+    expect(listPageSize(listOf([item(1), item(2)]), 0, false, 10)).toBe(PAGE_SIZE)
+  })
+
+  test('is PAGE_SIZE without bodyRows or a list', () => {
+    expect(listPageSize(listOf([item(1)]), 0, false, undefined)).toBe(PAGE_SIZE)
+    expect(listPageSize(null, 0, false, 12)).toBe(PAGE_SIZE)
+  })
+})
+
+describe('rebasePage', () => {
+  test('keeps the first visible item on screen', () => {
+    expect(rebasePage(2, 10, 5)).toBe(4)
+    expect(rebasePage(3, 5, 10)).toBe(1)
+    expect(rebasePage(3, 10, 10)).toBe(3)
+    expect(rebasePage(0, 10, 3)).toBe(0)
   })
 })

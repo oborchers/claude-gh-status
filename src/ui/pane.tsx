@@ -3,14 +3,15 @@
 import type { RenderElement } from 'claude-code'
 
 import { availableActions, rerunnableRunIds } from '../actions'
-import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, ReviewThread, Snapshot, Status } from '../model'
+import type { ActionOutcome, Check, CheckState, JobDetail, PipelineSummary, PullRequest, RepoLocation, ReviewThread, Snapshot, Status } from '../model'
 import { checkGlyph, formatDuration, pipelineVerdict, prBadge, queueLine, commentWhen, relativeTime, shortSha, mergeTone, summarizePipeline, verdictText } from '../status'
-import { cellWidth, count, headingLine, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
+import { cellWidth, count, headingLine, isForeignRepo, repeatsBadge, retryText, snapshotLine, truncate, truncateStart, unavailableText } from './format'
 import { prAnchor } from './anchor'
 import { confirmRowCount, renderConfirm } from './confirm'
 import { badgeBackground, tone } from './colors'
-import type { Tone } from './colors'
+import type { Palette, Tone } from './colors'
 import type { Handlers, UiTable, View } from './contract'
+import { titleButton } from './detail'
 
 type Pr = Extract<Snapshot, { kind: 'pr' }>
 const MAX_CHECK_ROWS = 40
@@ -36,8 +37,9 @@ function checkColor(state: CheckState): Tone | undefined {
   }
 }
 
-function checkRank(check: Check): number {
-  switch (check.state) {
+/** Failed first, then running, queued, passed, and checks that did not run last. */
+export function stateRank(state: CheckState): number {
+  switch (state) {
     case 'failure':
     case 'timed-out':
     case 'action-required':
@@ -54,6 +56,8 @@ function checkRank(check: Check): number {
       return 3
   }
 }
+
+const checkRank = (check: Check): number => stateRank(check.state)
 
 /** Required checks first, then failed, running, queued, the rest; stale checks are left out. */
 export function sortChecks(checks: Check[]): Check[] {
@@ -87,14 +91,62 @@ function jobFor(check: Check, jobs: JobDetail[]): JobDetail | null {
   return jobs.find((job) => job.jobId === check.jobId) ?? null
 }
 
+/** The step line under a running or failed job state, or null when it has none. */
+function stepOf(state: CheckState, rank: number, job: JobDetail): { text: string; isRunning: boolean } | null {
+  const isRunning = state === 'running'
+  const step = isRunning ? job.currentStep : (job.failedStep ?? job.currentStep)
+  if (step === null || !(isRunning || rank === 0)) return null
+  return { text: `  ${isRunning ? '▸' : '✗'} ${step}`, isRunning }
+}
+
 /** The step line under a running or failed check, or null when it has none. */
 function stepLine(check: Check, jobs: JobDetail[]): { text: string; isRunning: boolean } | null {
   const job = jobFor(check, jobs)
-  if (job === null) return null
-  const isRunning = check.state === 'running'
-  const step = isRunning ? job.currentStep : (job.failedStep ?? job.currentStep)
-  if (step === null || !(isRunning || checkRank(check) === 0)) return null
-  return { text: `  ${isRunning ? '▸' : '✗'} ${step}`, isRunning }
+  return job === null ? null : stepOf(check.state, checkRank(check), job)
+}
+
+/** 0 for a job that failed, so its step shows; see checkRank. */
+function jobRank(job: JobDetail): number {
+  return checkRank({ name: job.name, workflow: null, state: job.state, isRequired: false, startedAt: null, completedAt: null, url: null, runId: job.runId, jobId: job.jobId })
+}
+
+/**
+ * The jobs of one run as rows: glyph, name (a plain Button keyed <keyPrefix>-<i> when the job has a
+ * url), and under a running or failed job its step. Shared by the Actions tab's run detail.
+ */
+export function jobLines(table: UiTable, jobs: JobDetail[], palette: Palette, columns: number, openUrl: (url: string) => void, keyPrefix = 'job'): RenderElement[] {
+  const { Button, Text } = table
+  const rows: RenderElement[] = []
+  jobs.forEach((job, index) => {
+    const color = checkColor(job.state)
+    const dim = job.state === 'skipped' || job.state === 'neutral' ? true : undefined
+    const name = truncate(job.name, Math.max(4, columns - 2))
+    const url = job.url
+    if (url !== null) {
+      rows.push(
+        <Button key={`${keyPrefix}-${index}`} plain onPress={() => openUrl(url)}>
+          <Text color={tone(palette, color)} dimColor={dim}>{`${checkGlyph(job.state)} `}</Text>
+          <Text dimColor={dim}>{name}</Text>
+        </Button>,
+      )
+    } else {
+      rows.push(
+        <Text wrap="truncate-end">
+          <Text color={tone(palette, color)} dimColor={dim}>{`${checkGlyph(job.state)} `}</Text>
+          <Text dimColor={dim}>{name}</Text>
+        </Text>,
+      )
+    }
+    const step = stepOf(job.state, jobRank(job), job)
+    if (step !== null) {
+      rows.push(
+        <Text color={step.isRunning ? palette.pending : palette.failure} wrap="truncate-end">
+          {truncate(step.text, columns)}
+        </Text>,
+      )
+    }
+  })
+  return rows
 }
 
 function heading(table: UiTable, title: string, columns: number): RenderElement {
@@ -296,8 +348,59 @@ function checksList(table: UiTable, view: View, handlers: Handlers, title: strin
   return rows
 }
 
+/** Workflow runs the pipeline offers a button for: those with a failed check, else all of them when there are at most two. */
+function runTargets(pr: PullRequest): { runId: number; name: string }[] {
+  const byRun = new Map<number, { name: string; isFailed: boolean }>()
+  for (const check of sortChecks(pr.checks).slice(0, MAX_CHECK_ROWS)) {
+    if (check.runId === null) continue
+    const isFailed = checkRank(check) === 0 && check.state !== 'cancelled'
+    const known = byRun.get(check.runId)
+    if (known === undefined) byRun.set(check.runId, { name: check.workflow ?? check.name, isFailed })
+    else if (isFailed) known.isFailed = true
+  }
+  const all = [...byRun.entries()].map(([runId, { name, isFailed }]) => ({ runId, name, isFailed }))
+  const failed = all.filter((run) => run.isFailed)
+  return (failed.length > 0 ? failed : all.length <= 2 ? all : []).map(({ runId, name }) => ({ runId, name }))
+}
+
+/** The `open run: <workflow>` buttons under the pipeline; none without the handler or while a confirmation waits. */
+function runButtons(table: UiTable, view: View, handlers: Handlers, pr: PullRequest): RenderElement[] {
+  const { Button, Text } = table
+  const { openRun } = handlers
+  if (openRun === undefined || isConfirming(view)) return []
+  return runTargets(pr).map(({ runId, name }) => (
+    <Button key={`run-${runId}`} plain onPress={() => openRun(runId)}>
+      <Text dimColor>{truncate(`open run: ${name} ↗`, view.columns)}</Text>
+    </Button>
+  ))
+}
+
 function pipelineSection(table: UiTable, view: View, handlers: Handlers, pr: PullRequest, status: Status): RenderElement[] {
-  return checksList(table, view, handlers, 'Pipeline', pr.checks, status.pipeline, 'check')
+  return [...checksList(table, view, handlers, 'Pipeline', pr.checks, status.pipeline, 'check'), ...runButtons(table, view, handlers, pr)]
+}
+
+/** The `Linked issues` section: a plain Button per issue the pull request closes (plain text while a confirmation waits); null when there are none. */
+function linkedIssuesSection(table: UiTable, view: View, handlers: Handlers, pr: PullRequest, location: RepoLocation): RenderElement[] | null {
+  const { Button, Text } = table
+  const issues = pr.linkedIssues ?? []
+  if (issues.length === 0) return null
+  const rows: RenderElement[] = [heading(table, 'Linked issues', view.columns)]
+  const { openLinkedIssue } = handlers
+  issues.forEach((issue) => {
+    const isForeign = isForeignRepo(issue.repo, location)
+    const label = truncate(`${isForeign ? issue.repo : ''}#${issue.number} ${issue.title}`, view.columns)
+    const dim = issue.state === 'closed' || isForeign ? true : undefined
+    if (isForeign || openLinkedIssue === undefined || isConfirming(view)) {
+      rows.push(<Text dimColor={dim} wrap="truncate-end">{label}</Text>)
+    } else {
+      rows.push(
+        <Button key={`linked-issue-${issue.number}`} plain onPress={() => openLinkedIssue(issue.number)}>
+          <Text dimColor={dim}>{label}</Text>
+        </Button>,
+      )
+    }
+  })
+  return rows
 }
 
 function queueSection(table: UiTable, view: View, handlers: Handlers, pr: PullRequest): RenderElement[] | null {
@@ -442,9 +545,15 @@ function navWidth(view: View, handlers: Handlers): number {
  * refreshes. It keeps the key of the row that opened it, so a desktop pane that drops
  * the focus when the pressed Button is gone from the next drawing keeps it here.
  */
-function selectedTitle(table: UiTable, handlers: Handlers, number: number, title: string): RenderElement {
-  const { Button } = table
-  return <Button key={`pr-${number}`} plain label={title} onPress={() => handlers.refresh()} />
+function selectedTitle(table: UiTable, view: View, handlers: Handlers, number: number, title: string): RenderElement {
+  const key = `pr-${number}`
+  return titleButton(table, key, title, () => handlers.refresh())
+}
+
+/** The branch pull request's title: on the terminal the `pr-anchor` Button drawn calm, on the desktop the Link. */
+function branchTitle(table: UiTable, view: View, handlers: Handlers, href: string, title: string): RenderElement {
+  if (view.surface === 'desktop') return prAnchor(table, view, handlers, href, title)
+  return titleButton(table, 'pr-anchor', title, () => handlers.openOnGitHub())
 }
 
 function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot: Pr): RenderElement[] {
@@ -462,7 +571,7 @@ function headerSection(table: UiTable, view: View, handlers: Handlers, snapshot:
         </Text>
         <Text> </Text>
       </Box>
-      <Box flexShrink={0}>{view.isSelected === true ? selectedTitle(table, handlers, pr.number, title) : prAnchor(table, view, handlers, pr.url, title)}</Box>
+      {view.isSelected === true ? selectedTitle(table, view, handlers, pr.number, title) : branchTitle(table, view, handlers, pr.url, title)}
       {navButtons(table, view, handlers, LIST_GAP)}
     </Box>,
     <Text wrap="truncate-end">
@@ -500,6 +609,8 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
   const { pr } = snapshot
   const queueRows = queueSection(table, view, handlers, pr)
   const queueBlock = queueRows === null ? null : <Box flexDirection="column">{queueRows}</Box>
+  const linkedRows = linkedIssuesSection(table, view, handlers, pr, snapshot.location)
+  const linkedBlock = linkedRows === null ? null : <Box flexDirection="column">{linkedRows}</Box>
   return (
     <Box flexDirection="column" gap={1}>
       <Box flexDirection="column">
@@ -514,6 +625,7 @@ export function renderPane(table: UiTable, view: View, handlers: Handlers): Rend
       <Box flexDirection="column">
         {conversationSection(table, view, handlers, pr, status)}
       </Box>
+      {linkedBlock}
       {queueBlock}
       <Box flexDirection="column">
         {pipelineSection(table, view, handlers, pr, status)}
@@ -590,7 +702,7 @@ function conversationRowCount(pr: PullRequest, status: Status): number {
  * Rows renderPane draws for a view, clamped to 6..40. register.tsx asks the engine
  * for this height when the pane opens inline, where it would otherwise get a third.
  */
-export function paneRowCount(view: View): number {
+export function paneRowCount(view: View, handlers: Pick<Handlers, 'openRun'> = {}): number {
   const { snapshot, status } = view
   if (snapshot.kind !== 'pr' || status === null) {
     const text = snapshotLine(snapshot, 'pane', view.nowMs)?.text ?? 'No pull request status yet.'
@@ -603,8 +715,9 @@ export function paneRowCount(view: View): number {
     mergeRowCount(view, pr, status, snapshot.account.login),
     1 + Math.max(1, status.approvals.length + status.changesRequestedBy.length + status.requested.length),
     conversationRowCount(pr, status),
-    checksRowCount(view, pr.checks, status.pipeline),
+    checksRowCount(view, pr.checks, status.pipeline) + (handlers.openRun === undefined || isConfirming(view) ? 0 : runTargets(pr).length),
   ]
+  if ((pr.linkedIssues ?? []).length > 0) sections.push(1 + (pr.linkedIssues ?? []).length)
   if (pr.isInMergeQueue && pr.mergeQueueEntry !== null) {
     sections.push(checksRowCount(view, pr.mergeQueueEntry.checks, summarizePipeline(pr.mergeQueueEntry.checks)))
   }

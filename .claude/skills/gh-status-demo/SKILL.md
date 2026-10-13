@@ -50,6 +50,24 @@ gh api repos/<owner>/<repo>/pulls/<n>/comments \
 
 The pane then shows `1 unresolved thread` with `demo/checkout-flow.md:3` and the last comment.
 
+### Demo issues
+
+The Issues tab needs a few open issues with labels. Create the labels first (`gh label create`), then issues with `gh issue create --title ... --body ... --label ...`; assign one to the person (`--assignee @me`) and mention a pull request in one body so that a linked pull request shows. Issues are posted as the person: show the exact titles, bodies and labels first and create them only after approval.
+
+### Red run on main
+
+For the `main ✗` notice in the band, make the newest run of the demo workflow on the default branch fail. This only works once the workflow with `workflow_dispatch` is on `main`. Ask before running it:
+
+```bash
+gh workflow run demo.yml --ref main -f fail=true
+```
+
+Take the screenshot while the run is red, then run it again so main is green again:
+
+```bash
+gh workflow run demo.yml --ref main -f fail=false
+```
+
 ## 3. Start a session with the mod
 
 ```bash
@@ -57,7 +75,7 @@ cd ../gh-status-demo
 claude --plugin-dir <path-to-this-repo>
 ```
 
-Type `/pr` to open the detail pane. The band above the prompt shows the short status.
+Type `/pr` (or `/gh`) to open the detail pane. `/gh` opens the pane with the keyboard, and the digits `1`, `2` and `3` switch between the PRs, Issues and Actions tabs. The band above the prompt shows the short status.
 
 ## 4. Lay out the terminal
 
@@ -85,13 +103,17 @@ Timing after the push (the demo jobs sleep):
 - 2:30 to 5:00: E2E jobs run with their steps while the integration job is red. Best moment for the full picture.
 - after about 5:30: everything settled, pipeline failed.
 
-Take five views:
+Take nine views:
 
 1. Tab view: terminal about 147x41 cells, `/pr` docked on the right, band above the prompt.
 2. Compact view: terminal about 100 columns, `/pr` inline above the prompt.
 3. Band: a single-row crop of the band.
 4. List view (`docs/images/list-view.png`): `/pr list`, with the demo pull requests above, a draft among them and labels set. Crop to the pane and its filled rows.
 5. Selected view (`docs/images/selected-view.png`): press Enter on a row in the list; the same pane switches to that pull request and shows `b: back to list` in its header (list and selected view are one pane, not two). Crop to the pane.
+6. Issues view (`docs/images/issues-view.png`): `/gh issues`, with the demo issues (see "Demo issues") in their groups. Crop to the pane.
+7. Issue view (`docs/images/issue-view.png`): Enter on an issue that has labels, an assignee and a linked pull request. Crop to the pane.
+8. Actions view (`docs/images/actions-view.png`): `/gh actions`, with the default branch, this branch and recent runs. Crop to the pane.
+9. Run view (`docs/images/run-view.png`): Enter on a run with a failed job. Crop to the pane.
 
 Method (herdr, headless Playwright, no OS screenshots):
 
@@ -115,6 +137,7 @@ To show the confirmation, press `m` in the band (click the band first) or type `
 
 ```bash
 gh pr close <n> --delete-branch
+gh issue close <n>   # for each demo issue
 git worktree remove ../gh-status-demo
 git branch -D demo/checkout-flow
 ```

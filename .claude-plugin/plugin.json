@@ -1,6 +1,6 @@
 {
   "name": "gh-status",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Live status of the current branch's GitHub pull request in Claude Code: checks, reviews, threads, mergeability, merge queue, with confirmed merge actions.",
   "types": "./types/index.d.ts",
   "author": {
@@ -43,6 +43,13 @@
       "description": "claude follows your Claude Code theme; github uses GitHub's Primer colors",
       "options": ["claude", "github"],
       "default": "claude"
+    },
+    "mainStatus": {
+      "type": "string",
+      "title": "Main branch status in the band",
+      "description": "red shows the failing workflows of the default branch in the band (for example 'main ✗ CI'); off hides it and stops reading them",
+      "options": ["red", "off"],
+      "default": "red"
     }
   }
 }

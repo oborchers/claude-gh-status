@@ -467,6 +467,32 @@ describe('selection rule', () => {
   })
 })
 
+describe('linked issues', () => {
+  type Raw = { detail: { data: { node: Record<string, unknown> } } }
+  const withClosing = (value: unknown) => {
+    const raw = structuredClone(prGreen) as unknown as Raw
+    raw.detail.data.node.closingIssuesReferences = value
+    return raw
+  }
+
+  test('the detail query asks for the first 5 closing issues', () => {
+    expect(PR_DETAIL_QUERY).toContain('closingIssuesReferences(first: 5) { nodes { number title state repository { nameWithOwner } } }')
+  })
+
+  test('fills linkedIssues with the state lowercased', () => {
+    const raw = withClosing({ nodes: [{ number: 7, title: 'Crash', state: 'OPEN' }, { number: 9, title: 'Old', state: 'CLOSED' }] })
+    expect(normalize(raw, cliLocation).pr?.linkedIssues).toEqual([
+      { number: 7, title: 'Crash', state: 'open' },
+      { number: 9, title: 'Old', state: 'closed' },
+    ])
+  })
+
+  test('is empty when the answer has none, or junk entries', () => {
+    expect(normalize(prGreen, cliLocation).pr?.linkedIssues).toEqual([])
+    expect(normalize(withClosing({ nodes: [null, { title: 'no number' }, 3] }), cliLocation).pr?.linkedIssues).toEqual([])
+  })
+})
+
 describe('queries', () => {
   test('are read-only GraphQL with the variables the fetch supplies', () => {
     expect(PR_QUERY.startsWith('query(')).toBe(true)

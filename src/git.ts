@@ -4,13 +4,14 @@
 
 import type { RepoLocation } from './model'
 import type { Exec } from './gh'
+import { OWNER_PATTERN, REPO_PATTERN } from './text'
 
 const GIT_TIMEOUT_MS = 5_000
 const URL_FORM = /^(?:https?|ssh|git):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+)$/i
 const SCP_FORM = /^(?:[^@/\s]+@)?([^:/\s]+):(?!\/\/)(.+)$/
 const PINNED_LOGIN = /gh\s+auth\s+token\s+(?:-u|--user)[\s=]+["']?([A-Za-z0-9][A-Za-z0-9_-]*)/
 
-/** Extracts owner and repository from a github.com remote URL; null for anything else. */
+/** Extracts owner and repository from a github.com remote URL; null for anything else, including names GitHub does not allow. */
 export function parseGitHubRemote(url: string): { owner: string; repo: string } | null {
   const text = url.trim()
   const match = URL_FORM.exec(text) ?? SCP_FORM.exec(text)
@@ -22,6 +23,7 @@ export function parseGitHubRemote(url: string): { owner: string; repo: string } 
   const owner = segments[0]
   const repo = segments[1]
   if (segments.length !== 2 || !owner || !repo) return null
+  if (!OWNER_PATTERN.test(owner) || !REPO_PATTERN.test(repo)) return null
   return { owner, repo }
 }
 

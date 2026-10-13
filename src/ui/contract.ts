@@ -3,7 +3,7 @@
 
 import type { Elements } from 'claude-code'
 
-import type { ActionOutcome, JobDetail, ListCounts, MergeMethod, PendingAction, PrList, Snapshot, Status } from '../model'
+import type { ActionOutcome, CheckState, IssueList, IssueSnapshot, JobDetail, ListCounts, MainStatus, MergeMethod, PaneTab, PendingAction, PrList, RunList, RunSnapshot, Snapshot, Status } from '../model'
 import type { Palette } from './colors'
 
 /** The element tables of the surfaces gh-status draws on. */
@@ -34,6 +34,8 @@ export type View = {
   hasPending?: boolean
   /** Open, yours and review-requested counts for the band; null until fetched. */
   counts?: ListCounts | null
+  /** The default branch's failing workflows for the band; null or absent hides the segment (also when the `mainStatus` option is off). */
+  mainStatus?: MainStatus | null
 }
 
 /** What the list view draws from. */
@@ -41,9 +43,9 @@ export type ListView = {
   list: PrList | null
   /** Zero-based page. */
   page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
   hideDrafts: boolean
-  /** The key of the Button that holds the focus ring (`pr-<n>`); null until it is known. */
-  focusedKey: string | null
   counts: ListCounts | null
   nowMs: number
   columns: number
@@ -104,4 +106,90 @@ export type Handlers = {
   back?(): void
   /** Shows the list of open pull requests in the pane. */
   openList?(): void
+  /** An issue linked from the pull request: opens it in the Issues tab. */
+  openLinkedIssue?(number: number): void
+  /** A workflow run of the pipeline: opens it in the Actions tab. */
+  openRun?(runId: number): void
+  /** Opens the pane on the Actions tab list (the band's main-branch segment). */
+  openActions?(): void
+}
+
+/** The tab row every view of the pane draws first. */
+export type TabsView = {
+  tab: PaneTab
+  /** Open pull requests and open issues; absent until read. */
+  prCount: number | null
+  issueCount: number | null
+  /** The worst newest run on the default branch; null until read. */
+  mainWorst: CheckState | null
+  /** True while a confirmation waits: the tab row is then drawn without buttons, so nothing moves away from it. */
+  isLocked: boolean
+  palette: Palette
+}
+
+/** What the Issues list draws from. */
+export type IssuesView = {
+  issues: IssueList | null
+  page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
+  /** The viewer's login, for the groups. */
+  viewer: string
+  nowMs: number
+  columns: number
+  surface?: 'terminal' | 'desktop'
+  palette: Palette
+}
+
+/** What the Actions list draws from. */
+export type RunsView = {
+  runs: RunList | null
+  page: number
+  /** Items per page; PAGE_SIZE when absent. */
+  pageSize?: number
+  nowMs: number
+  columns: number
+  surface?: 'terminal' | 'desktop'
+  palette: Palette
+}
+
+/** What an issue's detail draws from. */
+export type IssueDetailView = {
+  snapshot: IssueSnapshot
+  nowMs: number
+  columns: number
+  surface?: 'terminal' | 'desktop'
+  palette: Palette
+}
+
+/** What a run's detail draws from. */
+export type RunDetailView = {
+  snapshot: RunSnapshot
+  /** Result of the last rerun from this view; null when none ran. */
+  outcome: ActionOutcome | null
+  nowMs: number
+  columns: number
+  surface?: 'terminal' | 'desktop'
+  palette: Palette
+}
+
+/** Handlers of the tab row, the Issues and Actions lists and their details. None of them writes to GitHub but `rerunRun`. */
+export type RepoHandlers = {
+  showTab(tab: PaneTab): void
+  selectIssue(number: number): void
+  selectRun(runId: number): void
+  /** A pull request linked from an issue: opens it in the PRs tab. */
+  openLinkedPr(number: number): void
+  /** Up one level in the current tab: detail to list, the focus back on the row. */
+  back(): void
+  nextPage(): void
+  prevPage(): void
+  refresh(): void
+  closePane(): void
+  openUrl(url: string): void
+  copyText(text: string): void
+  /** Re-runs the failed jobs of the shown run, bound to its id. */
+  rerunRun(runId: number): void
+  /** Puts a reference to the shown run's failed job into the prompt. */
+  ciToClaude(runId: number): void
 }

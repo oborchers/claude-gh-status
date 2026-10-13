@@ -9,6 +9,7 @@ import { runGh } from './gh'
 import type { Exec, GhResult } from './gh'
 import type { AccountChoice, ListChecks, ListCounts, ListGroup, ListItem, PrList, Problem, RateLimit, RepoLocation, ReviewDecision } from './model'
 import { backoffMs, isTransient, reasonOf } from './scheduler'
+import { cleanStr } from './text'
 
 /** Most pull requests one list read returns; a repository with more is truncated. */
 export const LIST_LIMIT = 100
@@ -55,11 +56,12 @@ export const REQUESTED_QUERY = `query($q: String!) {
   }
 }`
 
-/** The two numbers of the band: variables $yours (`... author:@me`) and $requested (`... review-requested:@me`). */
-export const COUNTS_QUERY = `query($open: String!, $yours: String!, $requested: String!) {
+/** The numbers of the band: variables $yours (`... author:@me`), $requested (`... review-requested:@me`) and $issues (`repo:<owner>/<repo> is:issue is:open`). */
+export const COUNTS_QUERY = `query($open: String!, $yours: String!, $requested: String!, $issues: String!) {
   open: search(query: $open, type: ISSUE, first: 0) { issueCount }
   yours: search(query: $yours, type: ISSUE, first: 0) { issueCount }
   requested: search(query: $requested, type: ISSUE, first: 0) { issueCount }
+  issues: search(query: $issues, type: ISSUE, first: 0) { issueCount }
   rateLimit { cost remaining resetAt }
 }`
 
@@ -83,7 +85,7 @@ export type Page = {
   total: number
 }
 
-type Failure = Extract<GhResult, { isOk: false }>
+export type Failure = Extract<GhResult, { isOk: false }>
 
 export type FetchedList =
   | { kind: 'ok'; items: ListItem[]; total: number; isTruncated: boolean; rateLimit: RateLimit | null }
@@ -93,21 +95,21 @@ export type FetchedCounts =
   | { kind: 'ok'; counts: ListCounts; rateLimit: RateLimit | null }
   | { kind: 'error'; failure: Failure }
 
-type Obj = Record<string, unknown>
+export type Obj = Record<string, unknown>
 
-function asObj(value: unknown): Obj | null {
+export function asObj(value: unknown): Obj | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Obj) : null
 }
 
-function asStr(value: unknown): string | null {
+export function asStr(value: unknown): string | null {
   return typeof value === 'string' ? value : null
 }
 
-function asNum(value: unknown): number | null {
+export function asNum(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function nodesOf(value: unknown): Obj[] {
+export function nodesOf(value: unknown): Obj[] {
   const nodes = asObj(value)?.nodes
   if (!Array.isArray(nodes)) return []
   const result: Obj[] = []
@@ -194,7 +196,7 @@ function toItem(node: Obj, requestedNumbers: ReadonlySet<number>, viewer: string
   if (id === null || number === null) return null
   const labels: { name: string; color: string }[] = []
   for (const label of nodesOf(node.labels)) {
-    const name = asStr(label.name)
+    const name = cleanStr(label.name)
     if (name !== null) labels.push({ name, color: asStr(label.color) ?? '' })
   }
   const rollup = asObj(nodesOf(node.commits)[0]?.commit)?.statusCheckRollup
@@ -202,10 +204,10 @@ function toItem(node: Obj, requestedNumbers: ReadonlySet<number>, viewer: string
   return {
     id,
     number,
-    title: asStr(node.title) ?? '',
+    title: cleanStr(node.title) ?? '',
     url: asStr(node.url) ?? '',
     isDraft: node.isDraft === true,
-    author: asStr(asObj(node.author)?.login),
+    author: cleanStr(asObj(node.author)?.login),
     createdAt: asStr(node.createdAt) ?? '',
     labels,
     reviewDecision: REVIEW_DECISIONS[asStr(node.reviewDecision) ?? ''] ?? null,
@@ -294,7 +296,7 @@ export function paginate(grouped: Record<ListGroup, ListItem[]>, page: number, p
   }
 }
 
-function toRateLimit(value: unknown): RateLimit | null {
+export function toRateLimit(value: unknown): RateLimit | null {
   const limit = asObj(value)
   const remaining = asNum(limit?.remaining)
   const resetAt = asStr(limit?.resetAt)
@@ -306,11 +308,11 @@ function unreadable(): Failure {
   return { isOk: false, kind: 'server', exitCode: null, message: 'GitHub sent an unreadable answer', stdout: '' }
 }
 
-function failed(message: string): Failure {
+export function failed(message: string): Failure {
   return { isOk: false, kind: 'failed', exitCode: null, message, stdout: '' }
 }
 
-function parseJson(text: string): unknown {
+export function parseJson(text: string): unknown {
   try {
     return JSON.parse(text) as unknown
   } catch {
@@ -326,10 +328,11 @@ function graphqlMessage(answer: unknown): string | null {
 }
 
 /** Runs one query and parses it: the answer, or the failure. */
-async function ask(exec: Exec, query: string, variables: Record<string, string>, location: RepoLocation, login: string): Promise<{ answer: unknown } | { failure: Failure }> {
+export async function ask(exec: Exec, query: string, variables: Record<string, string | number>, location: RepoLocation, login: string): Promise<{ answer: unknown } | { failure: Failure }> {
   // -f, not -F: -F would turn a value like "123", "true" or "@file" into a number, bool or file read.
   const args = ['api', 'graphql', '-f', `query=${query}`]
-  for (const [name, value] of Object.entries(variables)) args.push('-f', `${name}=${value}`)
+  // A number is the one value -F is for: GraphQL wants an Int, and -f would send a string.
+  for (const [name, value] of Object.entries(variables)) args.push(typeof value === 'number' ? '-F' : '-f', `${name}=${value}`)
   const ran = await runGh(exec, args, { login, cwd: location.cwd })
   if (!ran.isOk) return { failure: ran }
   const answer = parseJson(ran.stdout)
@@ -363,13 +366,14 @@ export async function fetchList(exec: Exec, location: RepoLocation, login: strin
   return { kind: 'ok', ...normalized, rateLimit: toRateLimit(asObj(asObj(listed.answer)?.data)?.rateLimit) }
 }
 
-/** Reads the band's two numbers for a branch without a pull request (1 point). */
+/** Reads the band's numbers for a branch without a pull request (1 point). */
 export async function fetchCounts(exec: Exec, location: RepoLocation, login: string, now: () => string = () => new Date().toISOString()): Promise<FetchedCounts> {
   const open = searchOf(location, '')
   const yours = searchOf(location, 'author:@me')
   const requested = searchOf(location, 'review-requested:@me')
-  if (open === null || yours === null || requested === null) return { kind: 'error', failure: failed('no GitHub repository to count') }
-  const asked = await ask(exec, COUNTS_QUERY, { open, yours, requested }, location, login)
+  if (open === null || yours === null || requested === null || location.owner === null || location.repo === null) return { kind: 'error', failure: failed('no GitHub repository to count') }
+  const issues = `repo:${location.owner}/${location.repo} is:issue is:open`
+  const asked = await ask(exec, COUNTS_QUERY, { open, yours, requested, issues }, location, login)
   if ('failure' in asked) return { kind: 'error', failure: asked.failure }
   const data = asObj(asObj(asked.answer)?.data)
   return {
@@ -378,6 +382,7 @@ export async function fetchCounts(exec: Exec, location: RepoLocation, login: str
       open: asNum(asObj(data?.open)?.issueCount) ?? 0,
       yours: asNum(asObj(data?.yours)?.issueCount) ?? 0,
       requested: asNum(asObj(data?.requested)?.issueCount) ?? 0,
+      issues: asNum(asObj(data?.issues)?.issueCount) ?? 0,
       at: now(),
     },
     rateLimit: toRateLimit(data?.rateLimit),
@@ -431,16 +436,55 @@ export const ROWS_PER_PR = 3
  * stale hint or a wrapped footer. At most 40.
  */
 export function listRowCount(list: PrList | null, page: number, hideDrafts: boolean): number {
-  if (list === null || list.kind !== 'list') return 6
-  const shown = paginate(groupItems(list.items, list.account.login), page + 1, PAGE_SIZE, hideDrafts)
+  return Math.min(40, Math.max(6, listDrawnRows(list, page, hideDrafts, PAGE_SIZE)))
+}
+
+/**
+ * Rows the list view draws for the zero-based `page` of `pageSize` items, uncapped (0 without a
+ * list). With `isPadded` a short last page counts as full (as many items as fit the list), so
+ * the size a fit picks does not grow at the end of the list.
+ */
+export function listDrawnRows(list: PrList | null, page: number, hideDrafts: boolean, pageSize: number, isPadded = false): number {
+  if (list === null || list.kind !== 'list') return 0
+  const shown = paginate(groupItems(list.items, list.account.login), page + 1, pageSize, hideDrafts)
   const groups = new Set(shown.rows.map(row => row.group)).size
   // Per group: its heading (+1) and no blank after its last pull request (-1); between groups, one blank.
-  const body = shown.rows.length * ROWS_PER_PR + Math.max(0, groups - 1)
-  return Math.min(40, Math.max(6, body + 4))
+  const padding = isPadded ? Math.max(0, Math.min(pageSize, shown.total) - shown.rows.length) : 0
+  return (shown.rows.length + padding) * ROWS_PER_PR + Math.max(0, groups - 1) + 4
+}
+
+/**
+ * The page size that makes the list fit `bodyRows` when the page starts at item
+ * `firstIndex` (zero-based): the largest up to PAGE_SIZE whose drawing fits.
+ */
+export function listPageSize(list: PrList | null, firstIndex: number, hideDrafts: boolean, bodyRows: number | undefined): number {
+  return fitPageSize(size => listDrawnRows(list, Math.floor(firstIndex / size), hideDrafts, size, true), bodyRows)
 }
 
 /** The highest zero-based page of the list under the current draft filter. */
-export function lastPage(list: PrList | null, hideDrafts: boolean): number {
+export function lastPage(list: PrList | null, hideDrafts: boolean, pageSize: number = PAGE_SIZE): number {
   if (list === null || list.kind !== 'list') return 0
-  return paginate(groupItems(list.items, list.account.login), 1, PAGE_SIZE, hideDrafts).pageCount - 1
+  return paginate(groupItems(list.items, list.account.login), 1, pageSize, hideDrafts).pageCount - 1
+}
+
+/**
+ * The largest page size from `max` down to 1 whose drawn rows (`rowsFor(size)`)
+ * fit `bodyRows`; 1 when none does. Without a usable `bodyRows` (missing, 0,
+ * not finite: tests, desktop) it is `max`. Pure, exported for tests.
+ */
+export function fitPageSize(rowsFor: (size: number) => number, bodyRows: number | undefined, max: number = PAGE_SIZE): number {
+  if (bodyRows === undefined || !Number.isFinite(bodyRows) || bodyRows <= 0) return max
+  for (let size = max; size > 1; size--) {
+    if (rowsFor(size) <= bodyRows) return size
+  }
+  return 1
+}
+
+/**
+ * The zero-based page of `toSize` that holds the first item of page `page` of
+ * `fromSize`, so a pane that resizes keeps its first visible item. Pure, exported for tests.
+ */
+export function rebasePage(page: number, fromSize: number, toSize: number): number {
+  if (fromSize === toSize) return Math.max(0, page)
+  return Math.max(0, Math.floor((Math.max(0, page) * fromSize) / toSize))
 }

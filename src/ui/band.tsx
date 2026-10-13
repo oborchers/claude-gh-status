@@ -3,7 +3,7 @@
 
 import type { RenderElement } from 'claude-code'
 
-import type { PendingAction, PipelineSummary, PullRequest, Snapshot, Status } from '../model'
+import type { MainStatus, PendingAction, PipelineSummary, PullRequest, Snapshot, Status } from '../model'
 import { availableActions, rerunnableRunIds } from '../actions'
 import { formatDuration, mergeTone, nonCheckBlockers, prBadge, queueLine, verdictText } from '../status'
 import { cellWidth, fitSegments, repeatsBadge, snapshotLine, truncate, unavailableHint } from './format'
@@ -21,6 +21,10 @@ const ACCOUNT_MAX = 24
 const CANCEL_HOTKEY = 'n'
 /** Priority number of the '18 open' segment: above every button's, so it goes first. */
 const OPEN_PRIORITY = 100
+
+/** The key and hotkey of the band's main-branch segment. */
+const MAIN_KEY = 'band-main'
+const MAIN_HOTKEY = '3'
 
 type Run = { text: string; color?: Tone; isDim?: boolean }
 type Segment = Fittable & { key: string; runs: Run[]; button?: { hotkey: string; label: string; onPress: () => void } }
@@ -124,6 +128,39 @@ function buttonSegments(pr: PullRequest, status: Status, handlers: Handlers): Se
   return buttons
 }
 
+/** 'main ✗ CI +1' while workflows fail on the default branch; null when none does. Pure. */
+export function mainSegmentText(main: MainStatus | null | undefined): string | null {
+  if (main === null || main === undefined || main.failing.length === 0) return null
+  const more = main.failing.length > 1 ? ` +${main.failing.length - 1}` : ''
+  return `${main.defaultBranch} ✗ ${main.failing[0]?.name ?? ''}${more}`
+}
+
+/** The main-branch segment: a plain Button in the failure tone that opens the Actions tab. */
+function mainCell(table: UiTable, view: View, handlers: Handlers, text: string): RenderElement {
+  const { Button, Text } = table
+  const open = handlers.openActions
+  const label = <Text color={view.palette.failure} wrap="truncate-end">{text}</Text>
+  if (open === undefined) return cell(table, label)
+  return cell(
+    table,
+    <Button key={MAIN_KEY} plain hotkey={MAIN_HOTKEY} label="actions" onPress={() => open()}>
+      {label}
+    </Button>,
+  )
+}
+
+/** Cells the engine draws before a plain Button's children when it has a hotkey: '3: '. */
+const HOTKEY_PREFIX_WIDTH = 3
+
+/** Cells the main-branch segment takes: its text, and the hotkey prefix while it is a Button. */
+const mainWidth = (handlers: Handlers, text: string): number => cellWidth(text) + (handlers.openActions === undefined ? 0 : HOTKEY_PREFIX_WIDTH)
+
+/** The main-branch segment's text cut to a third of the row, or null when there is none to show. */
+function mainText(view: View, columns: number): string | null {
+  const text = mainSegmentText(view.mainStatus)
+  return text === null ? null : truncate(text, Math.max(12, Math.floor(columns / 3)))
+}
+
 function drawRuns(table: UiTable, palette: Palette, runs: Run[]): RenderElement[] {
   const { Text } = table
   return runs.map((run) => (
@@ -195,6 +232,8 @@ function prBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extrac
   // Stale data: the hint goes right before the account and is dropped right after it.
   const hint: Run | null = snapshot.stale ? { text: unavailableHint(snapshot.stale), color: 'pending' } : null
   if (hint !== null) segments.push({ key: 'hint', runs: [hint], priority: 5.5, width: cellWidth(hint.text) })
+  const main = mainText(view, columns)
+  if (main !== null) segments.push({ key: 'main', runs: [], priority: 5.7, width: mainWidth(handlers, main) })
   // Lowest priority of all, dropped before any button.
   const counts = view.counts
   if (counts !== null && counts !== undefined) {
@@ -233,6 +272,8 @@ function prBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extrac
           </Text>,
         ),
       )
+    } else if (segment.key === 'main' && main !== null) {
+      nodes.push(mainCell(table, view, handlers, main))
     } else if (segment.key === 'caveat' && caveat !== null) {
       nodes.push(
         cell(
@@ -353,6 +394,8 @@ function noPrBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extr
     if (counts.yours > 0) add('yours', `${counts.yours} yours`, 4)
     if (counts.requested > 0) add('requested', `${counts.requested} review requested`, 5)
   }
+  const main = mainText(view, columns)
+  if (main !== null) parts.push({ key: 'main', text: main, priority: 5.5, width: mainWidth(handlers, main) })
   add('account', truncate(`@${snapshot.account.login}`, ACCOUNT_MAX), 6)
   const openList = handlers.openList
   const listWidth = 'l'.length + 2 + cellWidth('list')
@@ -363,6 +406,10 @@ function noPrBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extr
   const nodes: RenderElement[] = []
   texts.forEach((part, index) => {
     if (index > 0) nodes.push(cell(table, <Text dimColor>{SEPARATOR}</Text>))
+    if (part.key === 'main') {
+      nodes.push(mainCell(table, view, handlers, part.text))
+      return
+    }
     nodes.push(
       cell(
         table,

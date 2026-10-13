@@ -5,6 +5,7 @@ import { runGh } from './gh'
 import type { Exec } from './gh'
 import type { JobDetail, RepoLocation } from './model'
 import { checkStateFrom } from './query'
+import { cleanStr } from './text'
 
 const MAX_RUNS = 5
 
@@ -30,7 +31,7 @@ export function parseJobs(raw: unknown, runId: number): JobDetail[] {
   for (const entry of jobs) {
     const job = asObj(entry)
     const jobId = job?.databaseId
-    const name = asStr(job?.name)
+    const name = cleanStr(job?.name)
     if (job === null || typeof jobId !== 'number' || name === null) continue
     const steps = Array.isArray(job.steps) ? job.steps.map(asObj).filter((step): step is Obj => step !== null) : []
     const current = steps.find(step => lowerStr(step.status) === 'in_progress')
@@ -40,8 +41,8 @@ export function parseJobs(raw: unknown, runId: number): JobDetail[] {
       runId,
       name,
       state: checkStateFrom(job.status, job.conclusion),
-      currentStep: asStr(current?.name),
-      failedStep: asStr(failed?.name),
+      currentStep: cleanStr(current?.name),
+      failedStep: cleanStr(failed?.name),
       url: asStr(job.url),
     })
   }

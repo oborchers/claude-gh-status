@@ -47,6 +47,8 @@ type World = {
   mutationAnswer: ReturnType<typeof done>
   /** What `gh run rerun` answers, per call. */
   rerunAnswer: (argv: readonly string[]) => ReturnType<typeof done>
+  /** The conclusion `GET actions/runs/900` answers. */
+  runConclusion: string
   filled: { text: string; mode?: string }[]
   clock: ReturnType<typeof mock.clock>
   /** The raw pull request nodes the list query answers. */
@@ -85,6 +87,9 @@ function answer(world: World, argv: readonly string[]) {
   if (args[0] === 'auth' && args[1] === 'token') return done(0, 'tok\n')
   if (args[0] === 'run' && args[1] === 'rerun') return world.rerunAnswer(argv)
   if (args[0] === 'run' && args[1] === 'view') return done(0, JSON.stringify(jobsRunning))
+  if (args[0] === 'api' && args[1] === 'repos/cli/cli/actions/runs/900') {
+    return done(0, JSON.stringify({ id: 900, run_number: 12, workflow_id: 3, name: 'CI', head_branch: 'feat/things', event: 'push', status: 'completed', conclusion: world.runConclusion, head_sha: 'a'.repeat(40), created_at: '2026-10-12T07:55:00Z', updated_at: '2026-10-12T07:59:00Z', html_url: 'https://github.com/cli/cli/actions/runs/900', run_attempt: 1 }))
+  }
   if (args[0] === 'api' && args.includes('-i')) return done(0, 'HTTP/2.0 200 OK\netag: W/"stable"\n\n{}')
   if (args[0] === 'pr' && args[1] === 'merge') {
     if (world.afterMerge !== null) world.fixture = world.afterMerge
@@ -147,6 +152,7 @@ function setup(on: On, fixture: Fixture = prRunning): World {
     mergeAnswer: done(0, 'merged\n'),
     mutationAnswer: done(0, '{"data":{}}'),
     rerunAnswer: () => done(0),
+    runConclusion: 'failure',
     filled: [],
     clock: mock.clock(on, { now: NOW }),
     listNodes: [],
@@ -228,8 +234,8 @@ describe('session start', () => {
   test('registers the pr command and starts a first refresh', async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | prs | issues (i) | actions (ac) | issue <n> | run <id> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
     expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
@@ -238,7 +244,7 @@ describe('session start', () => {
     const world = setup(on)
     await $.session.start({ cwd: '/work/cli', surface: null, isInteractive: false })
     await world.clock.settle()
-    expect(world.registered).toHaveLength(2)
+    expect(world.registered).toHaveLength(3)
     expect(world.fullFetches()).toBe(0)
   })
 })
@@ -250,7 +256,7 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [skill]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts.filter(text => text.includes('is taken here'))).toEqual(['gh-status: /pr is taken here (skill or command), use /gh-pr'])
   })
 
@@ -258,14 +264,14 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'other' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
   })
 
   test('an entry of this plugin itself is not a collision', async ($, on) => {
     const world = setup(on)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'gh-status' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -274,7 +280,7 @@ describe('the command name', () => {
     await start($, world)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin' }, { name: 'gh-pr', description: 'x', source: 'plugin' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh', 'pr', 'gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -282,13 +288,13 @@ describe('the command name', () => {
     const world = setup(on)
     world.listThrows = true
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
   })
 
   test('the configured name prs is registered next to gh-pr and answers', { options: { command: 'prs' } }, async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr', 'gh'])
     const ran = await runCommand($, 'prs')
     expect(ran.text).toContain('PR pane opened')
     const usage = await runCommand($, 'prs', 'nonsense')
@@ -299,7 +305,7 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [{ name: 'prs', description: 'x', source: 'user' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts).toContain('gh-status: /prs is taken here (skill or command), use /gh-pr')
   })
 
@@ -307,14 +313,14 @@ describe('the command name', () => {
     test(`the invalid name ${JSON.stringify(invalid)} falls back to pr`, { options: { command: invalid } }, async ($, on) => {
       const world = setup(on)
       await start($, world)
-      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
     })
   }
 
   test('gh-pr as the configured name registers once', { options: { command: 'gh-pr' } }, async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -1270,6 +1276,33 @@ describe('re-run failed jobs', () => {
   })
 })
 
+describe('re-run from the Actions run detail', () => {
+  const openRunDetail = async ($: Engine, world: World) => {
+    await start($, world)
+    await runPr($, 'run 900')
+    await world.clock.settle()
+    return showPane($)
+  }
+
+  test('a failed run re-runs its failed jobs', async ($, on) => {
+    const world = setup(on, prGreen)
+    const pane = await openRunDetail($, world)
+    await pane.press({ key: 'run-rerun' })
+    await world.clock.settle()
+    expect(reruns(world)).toEqual([['gh', 'run', 'rerun', '900', '--failed', '-R', 'cli/cli']])
+    await pane.unmount()
+  })
+
+  test('a run that is not failed offers no re-run and runs nothing', async ($, on) => {
+    const world = setup(on, prGreen)
+    world.runConclusion = 'success'
+    const pane = await openRunDetail($, world)
+    expect(await pane.find({ key: 'run-rerun' })).toBeUndefined()
+    expect(reruns(world)).toEqual([])
+    await pane.unmount()
+  })
+})
+
 describe('what the model can reach', () => {
   test('the plugin registers no tool', async ($, on) => {
     const world = setup(on, prGreen)
@@ -1342,7 +1375,8 @@ describe('a pull request picked from the list', () => {
     await runPr($, '99999')
     await world.clock.settle()
     const pane = await showPane($)
-    expect(await sees(pane, /PR #99999 was not found/)).toBe(true)
+    // Neither a pull request nor an issue: the Issues tab says so.
+    expect(await sees(pane, /Could not read issue #99999/)).toBe(true)
     expect(await pane.find({ key: 'back' })).toBeDefined()
     await pane.unmount()
   })
@@ -1574,7 +1608,7 @@ describe('the list of open pull requests', () => {
     await world.clock.settle()
     expect(world.opened.filter(opened => opened.id === LIST)).toHaveLength(2)
     // The list is known by the second open: one page of 10 in one group is a heading, 10 x 3 rows minus the last blank, header, footer and slack.
-    expect((world.opened.filter(opened => opened.id === LIST)[1] as { rows?: number }).rows).toBe(34)
+    expect((world.opened.filter(opened => opened.id === LIST)[1] as { rows?: number }).rows).toBe(35)
   })
 
   test('a branch without a pull request: /pr opens the list', async ($, on) => {
@@ -1637,7 +1671,7 @@ describe('the list of open pull requests', () => {
 
   describe('back to the list', () => {
     for (const key of ['back', 'pane-list']) {
-      test(`${key} (b or l) shows the list again in the same pane, the ring on the row it was opened from`, async ($, on) => {
+      test(`${key} (b or l) shows the list again in the same pane, the row it was opened from listed again`, async ($, on) => {
         const world = listWorld(on)
         await start($, world)
         await runPr($, 'list')
@@ -1651,13 +1685,13 @@ describe('the list of open pull requests', () => {
         await world.clock.settle()
         // Re-opened as the list: sized to its page, the same pane, no focus request.
         expect(world.opened.length).toBe(opens + 1)
-        expect(world.opened.at(-1)).toMatchObject({ id: PANE, rows: 34 })
+        expect(world.opened.at(-1)).toMatchObject({ id: PANE, rows: 35 })
         expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
         expect(await ui.find({ key: 'list-next' })).toBeDefined()
         expect(await ui.find({ key: 'back' })).toBeUndefined()
-        // The row it was opened from carries the focus marker.
-        expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
-        expect(await sees(ui, /▸ .*Change 14579/)).toBe(false)
+        // The row it was opened from is listed again; no row carries a marker.
+        expect(await ui.find({ key: 'pr-14580' })).toBeDefined()
+        expect(await sees(ui, /▸ /)).toBe(false)
         // The pick is dropped: it is no longer polled.
         await world.clock.advance(120_000)
         expect(world.numberLookups()).toHaveLength(lookups)
@@ -1693,7 +1727,8 @@ describe('the list of open pull requests', () => {
       expect(world.opened.at(-1)).toMatchObject({ id: PANE })
       const ui = await showList($)
       expect(await ui.find({ key: 'list-next' })).toBeDefined()
-      expect(await sees(ui, /▸ .*Change 14580/)).toBe(true)
+      expect(await ui.find({ key: 'pr-14580' })).toBeDefined()
+      expect(await sees(ui, /▸ /)).toBe(false)
       await world.clock.settle()
       await ui.unmount()
     })
@@ -1718,6 +1753,48 @@ describe('the list of open pull requests', () => {
     await ui.press({ key: 'list-prev' })
     expect(await sees(ui, /#14580\b/)).toBe(true)
     expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the page size follows the pane: n and p step in pages of the size that fits', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    // 15 rows of body: the tab row, then a heading and 3 items need 1 + 3 x 3 + 4 = 14.
+    const small = () => $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, scroll: { offset: 0, bodyRows: 15 } } })
+    const ui = await small()
+    expect(await sees(ui, /30 open · 1 to 3 · page 1 of 10/)).toBe(true)
+    expect(await sees(ui, /#14578\b/)).toBe(true)
+    expect(await sees(ui, /#14577\b/)).toBe(false)
+    await ui.press({ key: 'list-next' })
+    expect(await sees(ui, /30 open · 4 to 6 · page 2 of 10/)).toBe(true)
+    expect(await sees(ui, /#14577\b/)).toBe(true)
+    await ui.press({ key: 'list-prev' })
+    expect(await sees(ui, /1 to 3 · page 1 of 10/)).toBe(true)
+    expect(await ui.find({ key: 'list-prev' })).toBeUndefined()
+    for (let at = 0; at < 12; at += 1) {
+      if ((await ui.find({ key: 'list-next' })) !== undefined) await ui.press({ key: 'list-next' })
+    }
+    expect(await sees(ui, /28 to 30 · page 10 of 10/)).toBe(true)
+    expect(await ui.find({ key: 'list-next' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a pane that shrinks keeps the first visible item on the page', async ($, on) => {
+    const world = listWorld(on)
+    await start($, world)
+    await runPr($, 'list')
+    await world.clock.settle()
+    const big = await showList($)
+    await big.press({ key: 'list-next' })
+    expect(await sees(big, /11 to 20 · page 2 of 3/)).toBe(true)
+    await big.unmount()
+    const ui = await $.ui.mount({ plugin: 'gh-status', surface: 'terminal', component: 'Pane', requestId: LIST, props: { ...paneProps, scroll: { offset: 0, bodyRows: 15 } } })
+    // Item 11 is index 10: pages of 3 put it on the page that shows 10 to 12.
+    expect(await sees(ui, /10 to 12 · page 4 of 10/)).toBe(true)
+    await ui.press({ key: 'list-next' })
+    expect(await sees(ui, /13 to 15 · page 5 of 10/)).toBe(true)
     await ui.unmount()
   })
 
