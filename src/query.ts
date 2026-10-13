@@ -77,6 +77,7 @@ export const PR_DETAIL_QUERY = `query($id: ID!) {
       latestReviews(first: 20) { nodes { author { login } state submittedAt } }
       reviewThreads(first: 100) { nodes { isResolved isOutdated path line comments(last: 5) { nodes { author { login } createdAt lastEditedAt url } } } }
       comments(last: 100) { totalCount nodes { author { login } createdAt lastEditedAt url } }
+      closingIssuesReferences(first: 5) { nodes { number title state } }
       commits(last: 1) { nodes { commit { oid statusCheckRollup { state contexts(first: 100) { nodes {
         ${CONTEXT_FIELDS}
       } } } } } }
@@ -403,6 +404,17 @@ function allowedMethods(repository: Obj | null): MergeMethod[] {
   return methods
 }
 
+/** The issues a pull request closes when merged; entries without a number are dropped. */
+function linkedIssuesOf(raw: unknown): { number: number; title: string; state: 'open' | 'closed' }[] {
+  const issues: { number: number; title: string; state: 'open' | 'closed' }[] = []
+  for (const node of nodesOf(raw)) {
+    const number = asNum(node.number)
+    if (number === null) continue
+    issues.push({ number, title: asStr(node.title) ?? '', state: lower(node.state) === 'closed' ? 'closed' : 'open' })
+  }
+  return issues
+}
+
 /**
  * Turns the two GraphQL answers into the contract. Pure; never throws.
  * Anything unknown or missing falls back to a safe default.
@@ -463,6 +475,7 @@ export function normalize(raw: unknown, location: RepoLocation): NormalizedPullR
     threads: nodesOf(node.reviewThreads).map(toThread),
     commentCount: asNum(comments?.totalCount) ?? 0,
     lastComment: latestActive(nodesOf(comments)),
+    linkedIssues: linkedIssuesOf(node.closingIssuesReferences),
   }
   return { pr, rateLimit }
 }

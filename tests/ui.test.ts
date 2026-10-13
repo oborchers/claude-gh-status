@@ -1765,3 +1765,106 @@ describe('keys of the confirmation do not collide', () => {
     }
   })
 })
+
+describe('the pane: linked issues and workflow runs', () => {
+  const linked = [
+    { number: 7, title: 'Crash on start', state: 'open' as const },
+    { number: 9, title: 'Old report', state: 'closed' as const },
+  ]
+  const runChecks = [
+    makeCheck({ name: 'lint', workflow: 'CI', state: 'failure', runId: 70, jobId: 1, url: 'https://ci/lint' }),
+    makeCheck({ name: 'unit', workflow: 'CI', state: 'failure', runId: 70, jobId: 2 }),
+    makeCheck({ name: 'deploy', workflow: 'Deploy', state: 'success', runId: 71, jobId: 3 }),
+    makeCheck({ name: 'docs', workflow: 'Docs', state: 'success', runId: 72, jobId: 4 }),
+  ]
+  const pendingView = (view: View, kind: PendingAction['kind']): View => {
+    const pending = buildPending(kind, view.snapshot, undefined, 0, 'x')
+    if (pending === null) throw new Error(`${kind} is not offered`)
+    return { ...view, pending }
+  }
+  const full = (extra: Partial<Handlers> = {}) => handlersFor([], { openLinkedIssue: () => {}, openRun: () => {}, ...extra })
+  const runKeys = async (ui: Mounted) => (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('run-'))
+
+  test('draws a Linked issues section with one keyed button per issue, closed ones dim', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const calls: Calls = []
+      const ui = await rig.pane($, surface, prView({ linkedIssues: linked }, 80), handlersFor(calls, { openLinkedIssue: (n) => void calls.push(`issue ${n}`) }))
+      const text = await textOf(ui)
+      expect(text).toContain('── Linked issues')
+      expect(text).toContain('#7 Crash on start')
+      const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key)).filter((key) => key.startsWith('linked-issue-'))
+      expect(keys).toEqual(['linked-issue-7', 'linked-issue-9'])
+      expect(JSON.stringify(await ui.find({ key: 'linked-issue-9' }))).toContain('"dimColor":true')
+      await ui.press({ key: 'linked-issue-9' })
+      expect(calls).toEqual(['issue 9'])
+      await ui.unmount()
+    }
+  })
+
+  test('draws no section without linked issues, and no button without the handler', async ($, on) => {
+    const rig = createRig(on)
+    const none = await rig.pane($, 'terminal', prView({ linkedIssues: [] }, 80), full())
+    expect(await textOf(none)).not.toContain('Linked issues')
+    const absent = await rig.pane($, 'terminal', prView({}, 80), full())
+    expect(await textOf(absent)).not.toContain('Linked issues')
+    const noHandler = await rig.pane($, 'terminal', prView({ linkedIssues: linked }, 80), handlersFor([]))
+    expect(await noHandler.find({ key: 'linked-issue-7' })).toBeUndefined()
+  })
+
+  test('offers a run button per failing run, named by its workflow', async ($, on) => {
+    const rig = createRig(on)
+    const calls: Calls = []
+    const handlers = handlersFor(calls, { openRun: (id) => void calls.push(`run ${id}`) })
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks }, 80), handlers)
+    expect(await runKeys(ui)).toEqual(['run-70'])
+    expect(await textOf(ui)).toContain('open run: CI ↗')
+    await ui.press({ key: 'run-70' })
+    expect(calls).toEqual(['run 70'])
+  })
+
+  test('without a failure it offers every run when there are at most two, none for more', async ($, on) => {
+    const rig = createRig(on)
+    const two = runChecks.filter((check) => check.state === 'success')
+    const few = await rig.pane($, 'terminal', prView({ checks: two }, 80), full())
+    expect(await runKeys(few)).toEqual(['run-71', 'run-72'])
+    const three = [...two, makeCheck({ name: 'x', workflow: 'X', runId: 73 })]
+    const many = await rig.pane($, 'terminal', prView({ checks: three }, 80), full())
+    expect(await runKeys(many)).toEqual([])
+  })
+
+  test('skips the run buttons without the handler', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks }, 80), handlersFor([]))
+    expect(await runKeys(ui)).toEqual([])
+  })
+
+  test('both stay off the hotkeys and are hidden while a confirmation waits', async ($, on) => {
+    const rig = createRig(on)
+    const base = prView({ author: 'octocat', checks: [...runChecks, makeCheck()], linkedIssues: linked }, 100)
+    const idle = await rig.pane($, 'terminal', base, full())
+    const buttons = await idle.findAll({ type: 'Button' })
+    expect(buttons.filter((button) => /^(run|linked-issue)-/.test(String(button.key))).every((button) => button.props.hotkey === undefined)).toBe(true)
+    expect(hotkeysOf(buttons)).toEqual(['o', 'c', 'r'])
+    for (const view of [{ ...base, hasPending: true }, pendingView(base, 'approve')]) {
+      const ui = await rig.pane($, 'terminal', view, full())
+      const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key))
+      expect(keys.some((key) => /^(run|linked-issue)-/.test(key))).toBe(false)
+      await ui.unmount()
+    }
+  })
+
+  test('every button key is unique within the pane', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.pane($, 'terminal', prView({ checks: runChecks, linkedIssues: linked }, 100), full({ requestMerge: () => {} }))
+    const keys = (await ui.findAll({ type: 'Button' })).map((button) => String(button.key))
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  test('paneRowCount counts the section and the run lines', () => {
+    const base = prView({ checks: runChecks }, 80)
+    const withLinks = prView({ checks: runChecks, linkedIssues: linked }, 80)
+    expect(paneRowCount(withLinks)).toBe(paneRowCount(base) + 1 + linked.length + 1)
+    expect(paneRowCount(base, { openRun: () => {} })).toBe(paneRowCount(base) + 1)
+  })
+})
