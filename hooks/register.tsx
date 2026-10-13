@@ -149,7 +149,21 @@ const mainStatusState = atom({ plugin: 'gh-status', key: 'mainStatus' } as const
  * `generation` lets the flights of an older start notice they must not re-arm anything.
  */
 /** Options the render hooks read; set by register. */
-const settings = { isMainShown: true }
+/** The docked pane's default share of the terminal width, in percent (option `paneWidthPercent`); 0 leaves it to Claude Code. */
+const DEFAULT_PANE_WIDTH_PERCENT = 38
+/** The narrowest docked pane the share asks for, in cells. */
+const DOCK_MIN_COLUMNS = 60
+
+const settings = { isMainShown: true, paneWidthPercent: DEFAULT_PANE_WIDTH_PERCENT }
+
+/** The terminal's width in cells as last seen (a command's presentation or a drawing's viewport); null until known. */
+let terminalColumns: number | null = null
+
+/** What `$.ui.open` asks for the docked pane: a share of the terminal, never under DOCK_MIN_COLUMNS; nothing when off or unknown. */
+function dockColumns(): { columns?: number } {
+  if (settings.paneWidthPercent <= 0 || terminalColumns === null) return {}
+  return { columns: Math.max(DOCK_MIN_COLUMNS, Math.round((terminalColumns * settings.paneWidthPercent) / 100)) }
+}
 
 const timers: { branch: Timer | null; list: Timer | null; counts: Timer | null; tab: Timer | null; main: Timer | null } = { branch: null, list: null, counts: null, tab: null, main: null }
 let generation = 0
@@ -369,7 +383,7 @@ async function showPane($: EngineInterface, isFocused: boolean): Promise<UiOpenR
   // Docked, the pane takes the height of the screen; inline it would get a third and cut off,
   // so ask for what the content needs. A size the person dragged still wins (engine).
   const view = await readView($, PANE_ROWS_COLUMNS, 'terminal', paletteFor(undefined), 'pane')
-  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: TAB_ROW + paneRowCount(view, { openRun: () => undefined }), ...(isFocused ? { focus: true } : {}) })
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows: TAB_ROW + paneRowCount(view, { openRun: () => undefined }), ...dockColumns(), ...(isFocused ? { focus: true } : {}) })
   if (snapshot.kind === 'pr') {
     const nowMs = await $.clock.now()
     await update($, lastSeenState, seen => ({ ...seen, [seenKey(snapshot)]: new Date(nowMs).toISOString() }))
@@ -648,7 +662,7 @@ async function showList($: EngineInterface, live: Live | null, isFocused: boolea
   await update($, paneTabState, () => 'prs')
   await update($, paneViewState, () => 'list')
   const rows = TAB_ROW + listRowCount(await read($, listState), await read($, listPageState), await read($, listHideDraftsState))
-  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...(isFocused ? { focus: true } : {}) })
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...dockColumns(), ...(isFocused ? { focus: true } : {}) })
   if (live !== null) void live.runList()
   return opened
 }
@@ -759,7 +773,7 @@ async function showTabView($: EngineInterface, live: Live | null, isFocused: boo
   }
   if (live !== null) live.stopList()
   const rows = TAB_ROW + (await tabViewRows($, tab))
-  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...(isFocused ? { focus: true } : {}) })
+  const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, rows, ...dockColumns(), ...(isFocused ? { focus: true } : {}) })
   if (live !== null) void live.syncTab()
   return opened
 }
@@ -981,6 +995,8 @@ export const register: Register = (on, options) => {
   const palette = paletteFor(options.colors)
   const configured = commandNameOf(options.command)
   settings.isMainShown = !(typeof options.mainStatus === 'string' && options.mainStatus.trim().toLowerCase() === 'off')
+  const percent = Number(options.paneWidthPercent)
+  settings.paneWidthPercent = Number.isFinite(percent) && percent >= 0 && percent <= 90 ? percent : DEFAULT_PANE_WIDTH_PERCENT
   /** The names this mod answers to; set by session.start, empty before. */
   let activeNames: string[] = []
   /** Names this mod registered itself, so a second session.start (hot reload) does not read them as taken. */
@@ -1446,6 +1462,7 @@ export const register: Register = (on, options) => {
   // and answers only the names session.start registered; any other command goes on untouched.
   on('command.run', async ($, e, next) => {
     if (!activeNames.includes(e.command)) return next(e)
+    if (e.presentation.columns > 0) terminalColumns = e.presentation.columns
     const argument = e.args.trim().toLowerCase()
     if (argument === 'list' || argument === 'ls' || argument === 'prs') return { text: await openList($, live) }
     if (argument === 'issues' || argument === 'i') return { text: await openTabCommand($, live, 'issues') }
@@ -1553,6 +1570,7 @@ export const register: Register = (on, options) => {
   // One pane, three tabs. The tab row comes first; below it the active tab's list or detail.
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e, next) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
+    if (e.surface === 'terminal' && e.viewport !== undefined) terminalColumns = e.viewport.columns
     try {
       const table = $.ui.resolve(e)
       const { Box } = table

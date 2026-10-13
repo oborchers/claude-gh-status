@@ -272,6 +272,7 @@ Shown as rows in `/config`.
 | Toasts on state changes (`toasts`) | on | Show a toast when the pipeline, reviews, comments or mergeability change. |
 | Command name (`command`) | `pr` | Slash command name (1 to 32 characters of a-z, 0-9 and `-`; anything else means `pr`). When it is taken in a session, for example by a skill, `/gh-pr` is used instead. |
 | Main branch status in the band (`mainStatus`) | `red` | `red` shows `main ✗ <workflow>` in the band while a workflow of the default branch fails; `off` hides it and stops reading it. |
+| Pane width (`paneWidthPercent`) | `38` | Share of the terminal width the docked pane opens with, at least 60 columns. `0` leaves it to Claude Code. A width you drag the pane to wins. |
 | Color scheme (`colors`) | `claude` | `claude` follows your Claude Code theme; `github` uses GitHub's Primer colors. |
 
 ## Rate limits
