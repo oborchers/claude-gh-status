@@ -95,7 +95,7 @@ function rowsOf(node: unknown): string[] {
   if (element.type === 'Markdown') return String(props.text ?? '').split('\n')
   if (element.type === 'Button' || element.type === 'Link') {
     const text = children.length > 0 ? children.flatMap(rowsOf).join('') : String(props.label ?? '')
-    return [props.hotkey !== undefined && children.length === 0 ? `${String(props.hotkey)}: ${text}` : text]
+    return [props.hotkey !== undefined && props.plain === true ? `${String(props.hotkey)}: ${text}` : text]
   }
   const parts = children.map((child) => {
     const margin = Number((child as Node).props?.marginLeft ?? 0)

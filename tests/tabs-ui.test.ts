@@ -21,7 +21,7 @@ describe('renderTabs', () => {
     const rig = rigFor(on)
     for (const surface of SURFACES) {
       const ui = await rig.show($, surface, viewOf(), ignore, 80)
-      expect(await linesOf(ui)).toEqual(['1 PRs 4   2 Issues 7   3 Actions ✗'])
+      expect(await linesOf(ui)).toEqual(['1: PRs 4   2: Issues 7   3: Actions ✗'])
       await ui.unmount()
     }
   })
@@ -41,7 +41,7 @@ describe('renderTabs', () => {
       for (const [worst, symbol, color] of cases) {
         const ui = await rig.show($, 'terminal', viewOf({ mainWorst: worst, palette }), ignore, 80)
         const line = (await linesOf(ui))[0]
-        expect(line).toBe(symbol === null ? '1 PRs 4   2 Issues 7   3 Actions' : `1 PRs 4   2 Issues 7   3 Actions ${symbol}`)
+        expect(line).toBe(symbol === null ? '1: PRs 4   2: Issues 7   3: Actions' : `1: PRs 4   2: Issues 7   3: Actions ${symbol}`)
         if (symbol !== null && color !== null) {
           const node = nodesOf(await ui.drawn()).find((candidate) => candidate.children?.[0] === symbol)
           expect(node?.props?.color).toBe(palette[color])
@@ -54,12 +54,12 @@ describe('renderTabs', () => {
   test('an unknown count is left out', async ($, on) => {
     const rig = rigFor(on)
     const ui = await rig.show($, 'terminal', viewOf({ prCount: null, issueCount: null, mainWorst: null }), ignore, 80)
-    expect(await linesOf(ui)).toEqual(['1 PRs   2 Issues   3 Actions'])
+    expect(await linesOf(ui)).toEqual(['1: PRs   2: Issues   3: Actions'])
   })
 
   test('the active tab is bold, the others dim', async ($, on) => {
     const rig = rigFor(on)
-    const names = { prs: '1 PRs', issues: '2 Issues', actions: '3 Actions' }
+    const names = { prs: 'PRs', issues: 'Issues', actions: 'Actions' }
     for (const tab of ['prs', 'issues', 'actions'] as const) {
       const ui = await rig.show($, 'terminal', viewOf({ tab }), ignore, 80)
       for (const [which, text] of Object.entries(names)) {
@@ -98,9 +98,9 @@ describe('renderTabs', () => {
     const rig = rigFor(on)
     for (const surface of SURFACES) {
       const ui = await rig.show($, surface, viewOf({ isLocked: true, tab: 'issues' }), ignore, 80)
-      expect(await linesOf(ui)).toEqual(['1 PRs 4   2 Issues 7   3 Actions ✗'])
+      expect(await linesOf(ui)).toEqual(['1: PRs 4   2: Issues 7   3: Actions ✗'])
       expect(await ui.findAll({ type: 'Button' })).toHaveLength(0)
-      const active = nodesOf(await ui.drawn()).find((candidate) => candidate.children?.[0] === '2 Issues')
+      const active = nodesOf(await ui.drawn()).find((candidate) => candidate.children?.[0] === 'Issues')
       expect(active?.props?.bold).toBe(true)
       await ui.unmount()
     }
@@ -109,8 +109,8 @@ describe('renderTabs', () => {
   test('narrow: the counts go first, then the names are cut', async ($, on) => {
     const rig = rigFor(on)
     const wide = viewOf({ prCount: 120, issueCount: 45 })
-    const ui = await rig.show($, 'terminal', wide, { onShow: () => {}, columns: 30 }, 30)
-    expect((await linesOf(ui))[0]).toBe('1 PRs   2 Issues   3 Actions')
+    const ui = await rig.show($, 'terminal', wide, { onShow: () => {}, columns: 31 }, 31)
+    expect((await linesOf(ui))[0]).toBe('1: PRs   2: Issues   3: Actions')
     for (const columns of [24, 40, 80]) {
       const narrow = await rig.show($, 'terminal', wide, { onShow: () => {}, columns }, columns)
       for (const line of await linesOf(narrow)) expect(cellWidth(line)).toBeLessThanOrEqual(columns)

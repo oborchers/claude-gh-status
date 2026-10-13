@@ -35,7 +35,7 @@ export function rowsOf(node: unknown): string[] {
   const children = element.children ?? []
   if (element.type === 'Button' || element.type === 'Link') {
     const text = children.length > 0 ? children.flatMap(rowsOf).join('') : String(props.label ?? '')
-    return (props.hotkey !== undefined && children.length === 0 ? `${String(props.hotkey)}: ${text}` : text).split('\n')
+    return (props.hotkey !== undefined && props.plain === true ? `${String(props.hotkey)}: ${text}` : text).split('\n')
   }
   const parts = children.map((child) => {
     const margin = Number((child as Node).props?.marginLeft ?? 0)

@@ -149,6 +149,12 @@ function mainCell(table: UiTable, view: View, handlers: Handlers, text: string):
   )
 }
 
+/** Cells the engine draws before a plain Button's children when it has a hotkey: '3: '. */
+const HOTKEY_PREFIX_WIDTH = 3
+
+/** Cells the main-branch segment takes: its text, and the hotkey prefix while it is a Button. */
+const mainWidth = (handlers: Handlers, text: string): number => cellWidth(text) + (handlers.openActions === undefined ? 0 : HOTKEY_PREFIX_WIDTH)
+
 /** The main-branch segment's text cut to a third of the row, or null when there is none to show. */
 function mainText(view: View, columns: number): string | null {
   const text = mainSegmentText(view.mainStatus)
@@ -227,7 +233,7 @@ function prBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extrac
   const hint: Run | null = snapshot.stale ? { text: unavailableHint(snapshot.stale), color: 'pending' } : null
   if (hint !== null) segments.push({ key: 'hint', runs: [hint], priority: 5.5, width: cellWidth(hint.text) })
   const main = mainText(view, columns)
-  if (main !== null) segments.push({ key: 'main', runs: [], priority: 5.7, width: cellWidth(main) })
+  if (main !== null) segments.push({ key: 'main', runs: [], priority: 5.7, width: mainWidth(handlers, main) })
   // Lowest priority of all, dropped before any button.
   const counts = view.counts
   if (counts !== null && counts !== undefined) {
@@ -389,7 +395,7 @@ function noPrBand(table: UiTable, view: View, handlers: Handlers, snapshot: Extr
     if (counts.requested > 0) add('requested', `${counts.requested} review requested`, 5)
   }
   const main = mainText(view, columns)
-  if (main !== null) add('main', main, 5.5)
+  if (main !== null) parts.push({ key: 'main', text: main, priority: 5.5, width: mainWidth(handlers, main) })
   add('account', truncate(`@${snapshot.account.login}`, ACCOUNT_MAX), 6)
   const openList = handlers.openList
   const listWidth = 'l'.length + 2 + cellWidth('list')

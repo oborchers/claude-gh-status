@@ -1,5 +1,6 @@
-// The tab row every view of the pane draws first: '1 PRs 4   2 Issues 7   3 Actions ✗'.
-// Three plain Buttons with the hotkeys 1, 2 and 3; while a confirmation waits the same
+// The tab row every view of the pane draws first: '1: PRs 4   2: Issues 7   3: Actions ✗'.
+// Three plain Buttons with the hotkeys 1, 2 and 3 (the engine draws the '1: ' itself);
+// while a confirmation waits the same
 // row is drawn as plain text, so nothing moves the focus away from the confirmation.
 
 import type { RenderElement } from 'claude-code'
@@ -48,7 +49,7 @@ function suffixOf(view: TabsView, tab: PaneTab): Suffix | null {
 }
 
 function itemWidth(spec: TabSpec, suffix: Suffix | null): number {
-  return cellWidth(`${spec.hotkey} ${spec.name}`) + (suffix === null ? 0 : 1 + cellWidth(suffix.text))
+  return cellWidth(`${spec.hotkey}: ${spec.name}`) + (suffix === null ? 0 : 1 + cellWidth(suffix.text))
 }
 
 /**
@@ -64,14 +65,14 @@ export function renderTabs(table: UiTable, view: TabsView, onShow: (tab: PaneTab
   const full = TABS.reduce((sum, spec, index) => sum + itemWidth(spec, suffixes[index] ?? null), 0) + gaps
   const hasSuffix = full <= columns
   const bare = TABS.reduce((sum, spec) => sum + itemWidth(spec, null), 0) + gaps
-  const nameRoom = Math.max(1, Math.floor((columns - gaps) / TABS.length) - 2)
+  const nameRoom = Math.max(1, Math.floor((columns - gaps) / TABS.length) - cellWidth('1: '))
   const nodes: RenderElement[] = []
   TABS.forEach((spec, index) => {
     const isActive = view.tab === spec.tab
     const suffix = hasSuffix ? (suffixes[index] ?? null) : null
     const name = bare <= columns ? spec.name : truncate(spec.name, nameRoom)
     const style = { bold: isActive ? true : undefined, dimColor: isActive ? undefined : true }
-    const children: RenderElement[] = [<Text {...style}>{`${spec.hotkey} ${name}`}</Text>]
+    const children: RenderElement[] = [<Text {...style}>{name}</Text>]
     if (suffix !== null) {
       children.push(<Text {...style}>{' '}</Text>)
       if (suffix.color === undefined) children.push(<Text {...style}>{suffix.text}</Text>)
@@ -79,7 +80,7 @@ export function renderTabs(table: UiTable, view: TabsView, onShow: (tab: PaneTab
     }
     if (index > 0) nodes.push(<Text>{TAB_GAP}</Text>)
     if (view.isLocked) {
-      nodes.push(<Box flexShrink={0}>{children}</Box>)
+      nodes.push(<Box flexShrink={0}>{[<Text {...style}>{`${spec.hotkey}: `}</Text>, ...children]}</Box>)
       return
     }
     nodes.push(
