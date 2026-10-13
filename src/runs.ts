@@ -395,3 +395,35 @@ export function runDelayMs(snapshot: RunSnapshot | null, rateLimit: RateLimit | 
   const isLive = snapshot !== null && snapshot.kind === 'run' && (snapshot.run.state === 'queued' || snapshot.run.state === 'running')
   return pollDelayMs(isLive ? RUN_POLL_MS : RUN_IDLE_POLL_MS, rateLimit)
 }
+
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim()
+
+/** Job states that count as failed in a run reference. */
+const FAILED_JOB_STATES: readonly string[] = ['failure', 'timed-out']
+
+/**
+ * The text `[f]` in a run's detail puts into the prompt: which workflow failed where
+ * and how to read it, never the log itself. Null unless the snapshot is a run that
+ * failed or has a failed job. Pure.
+ */
+export function runReference(snapshot: RunSnapshot): string | null {
+  if (snapshot.kind !== 'run') return null
+  const { run, jobs, location } = snapshot
+  const failed = jobs.filter(job => FAILED_JOB_STATES.includes(job.state))
+  if (!FAILED_JOB_STATES.includes(run.state) && failed.length === 0) return null
+  const slug = location.owner !== null && location.repo !== null ? `${location.owner}/${location.repo}` : ''
+  const lines = [`CI failed in workflow "${oneLine(run.name)}" on ${slug} (run ${run.id}, ${run.url})`]
+  if (run.branch !== null) lines.push(`Branch: ${oneLine(run.branch)}`)
+  if (run.headSha !== '') lines.push(`Commit: ${run.headSha}`)
+  if (failed.length > 0) {
+    lines.push('Failed jobs:')
+    for (const job of failed) {
+      const parts = [`${oneLine(job.name)}: ${job.state}`, `job ${job.jobId}`]
+      if (job.failedStep) parts.push(`failed step "${oneLine(job.failedStep)}"`)
+      lines.push(`- ${parts.join(', ')}`)
+    }
+  }
+  lines.push(`  gh run view ${run.id} --log-failed${slug === '' ? '' : ` -R ${slug}`}`)
+  lines.push('Please investigate this failure and fix it.')
+  return lines.join('\n')
+}

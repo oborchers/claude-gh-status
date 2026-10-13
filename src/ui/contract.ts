@@ -3,7 +3,7 @@
 
 import type { Elements } from 'claude-code'
 
-import type { ActionOutcome, CheckState, IssueList, IssueSnapshot, JobDetail, ListCounts, MergeMethod, PaneTab, PendingAction, PrList, RunList, RunSnapshot, Snapshot, Status } from '../model'
+import type { ActionOutcome, CheckState, IssueList, IssueSnapshot, JobDetail, ListCounts, MainStatus, MergeMethod, PaneTab, PendingAction, PrList, RunList, RunSnapshot, Snapshot, Status } from '../model'
 import type { Palette } from './colors'
 
 /** The element tables of the surfaces gh-status draws on. */
@@ -34,6 +34,8 @@ export type View = {
   hasPending?: boolean
   /** Open, yours and review-requested counts for the band; null until fetched. */
   counts?: ListCounts | null
+  /** The default branch's failing workflows for the band; null or absent hides the segment (also when the `mainStatus` option is off). */
+  mainStatus?: MainStatus | null
 }
 
 /** What the list view draws from. */
@@ -108,6 +110,8 @@ export type Handlers = {
   openLinkedIssue?(number: number): void
   /** A workflow run of the pipeline: opens it in the Actions tab. */
   openRun?(runId: number): void
+  /** Opens the pane on the Actions tab list (the band's main-branch segment). */
+  openActions?(): void
 }
 
 /** The tab row every view of the pane draws first. */

@@ -228,8 +228,8 @@ describe('session start', () => {
   test('registers the pr command and starts a first refresh', async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
-    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
+    expect(world.registered[0]).toMatchObject({ name: 'pr', argumentHint: '<number> | prs | issues (i) | actions (ac) | issue <n> | run <id> | list (or ls) | back | refresh | open | close | copy | fix | rerun | merge | queue | dequeue | auto | admin | approve | changes | ready (or rr | m | q | dq | a | x)' })
     expect(world.toasts).toEqual([])
     expect(world.fullFetches()).toBe(1)
   })
@@ -238,7 +238,7 @@ describe('session start', () => {
     const world = setup(on)
     await $.session.start({ cwd: '/work/cli', surface: null, isInteractive: false })
     await world.clock.settle()
-    expect(world.registered).toHaveLength(2)
+    expect(world.registered).toHaveLength(3)
     expect(world.fullFetches()).toBe(0)
   })
 })
@@ -250,7 +250,7 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [skill]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts.filter(text => text.includes('is taken here'))).toEqual(['gh-status: /pr is taken here (skill or command), use /gh-pr'])
   })
 
@@ -258,14 +258,14 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'other' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
   })
 
   test('an entry of this plugin itself is not a collision', async ($, on) => {
     const world = setup(on)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin', plugin: 'gh-status' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -274,7 +274,7 @@ describe('the command name', () => {
     await start($, world)
     world.existing = [{ name: 'pr', description: 'x', source: 'plugin' }, { name: 'gh-pr', description: 'x', source: 'plugin' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh', 'pr', 'gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -282,13 +282,13 @@ describe('the command name', () => {
     const world = setup(on)
     world.listThrows = true
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
   })
 
   test('the configured name prs is registered next to gh-pr and answers', { options: { command: 'prs' } }, async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['prs', 'gh-pr', 'gh'])
     const ran = await runCommand($, 'prs')
     expect(ran.text).toContain('PR pane opened')
     const usage = await runCommand($, 'prs', 'nonsense')
@@ -299,7 +299,7 @@ describe('the command name', () => {
     const world = setup(on)
     world.existing = [{ name: 'prs', description: 'x', source: 'user' }]
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts).toContain('gh-status: /prs is taken here (skill or command), use /gh-pr')
   })
 
@@ -307,14 +307,14 @@ describe('the command name', () => {
     test(`the invalid name ${JSON.stringify(invalid)} falls back to pr`, { options: { command: invalid } }, async ($, on) => {
       const world = setup(on)
       await start($, world)
-      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr'])
+      expect(world.registered.map(command => command.name)).toEqual(['pr', 'gh-pr', 'gh'])
     })
   }
 
   test('gh-pr as the configured name registers once', { options: { command: 'gh-pr' } }, async ($, on) => {
     const world = setup(on)
     await start($, world)
-    expect(world.registered.map(command => command.name)).toEqual(['gh-pr'])
+    expect(world.registered.map(command => command.name)).toEqual(['gh-pr', 'gh'])
     expect(world.toasts).toEqual([])
   })
 
@@ -1342,7 +1342,8 @@ describe('a pull request picked from the list', () => {
     await runPr($, '99999')
     await world.clock.settle()
     const pane = await showPane($)
-    expect(await sees(pane, /PR #99999 was not found/)).toBe(true)
+    // Neither a pull request nor an issue: the Issues tab says so.
+    expect(await sees(pane, /Could not read issue #99999/)).toBe(true)
     expect(await pane.find({ key: 'back' })).toBeDefined()
     await pane.unmount()
   })
@@ -1574,7 +1575,7 @@ describe('the list of open pull requests', () => {
     await world.clock.settle()
     expect(world.opened.filter(opened => opened.id === LIST)).toHaveLength(2)
     // The list is known by the second open: one page of 10 in one group is a heading, 10 x 3 rows minus the last blank, header, footer and slack.
-    expect((world.opened.filter(opened => opened.id === LIST)[1] as { rows?: number }).rows).toBe(34)
+    expect((world.opened.filter(opened => opened.id === LIST)[1] as { rows?: number }).rows).toBe(35)
   })
 
   test('a branch without a pull request: /pr opens the list', async ($, on) => {
@@ -1651,7 +1652,7 @@ describe('the list of open pull requests', () => {
         await world.clock.settle()
         // Re-opened as the list: sized to its page, the same pane, no focus request.
         expect(world.opened.length).toBe(opens + 1)
-        expect(world.opened.at(-1)).toMatchObject({ id: PANE, rows: 34 })
+        expect(world.opened.at(-1)).toMatchObject({ id: PANE, rows: 35 })
         expect(world.opened.every(opened => opened.id === PANE)).toBe(true)
         expect(await ui.find({ key: 'list-next' })).toBeDefined()
         expect(await ui.find({ key: 'back' })).toBeUndefined()
