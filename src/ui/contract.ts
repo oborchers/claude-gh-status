@@ -36,6 +36,8 @@ export type View = {
   counts?: ListCounts | null
   /** The default branch's failing workflows for the band; null or absent hides the segment (also when the `mainStatus` option is off). */
   mainStatus?: MainStatus | null
+  /** The key of the pane Button that holds the focus ring; null or absent when unknown. */
+  focusedKey?: string | null
 }
 
 /** What the list view draws from. */
@@ -127,6 +129,8 @@ export type TabsView = {
   /** True while a confirmation waits: the tab row is then drawn without buttons, so nothing moves away from it. */
   isLocked: boolean
   palette: Palette
+  /** The key of the pane Button that holds the focus ring; the tab Button holding it is drawn calm. */
+  focusedKey?: string | null
 }
 
 /** What the Issues list draws from. */
@@ -160,6 +164,8 @@ export type RunsView = {
 /** What an issue's detail draws from. */
 export type IssueDetailView = {
   snapshot: IssueSnapshot
+  /** The key of the pane Button that holds the focus ring (`issue-<n>` for the header title). */
+  focusedKey?: string | null
   nowMs: number
   columns: number
   surface?: 'terminal' | 'desktop'
@@ -169,6 +175,8 @@ export type IssueDetailView = {
 /** What a run's detail draws from. */
 export type RunDetailView = {
   snapshot: RunSnapshot
+  /** The key of the pane Button that holds the focus ring (`run-<id>` for the header title). */
+  focusedKey?: string | null
   /** Result of the last rerun from this view; null when none ran. */
   outcome: ActionOutcome | null
   nowMs: number

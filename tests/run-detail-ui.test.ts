@@ -212,3 +212,40 @@ describe('the run detail', () => {
     }
   })
 })
+
+describe('the run detail header title', () => {
+  const swapped = { color: '#30363d', backgroundColor: '#e6edf3' }
+  type Piece = { props?: Record<string, unknown>; hover?: unknown }
+
+  test('is the Button text; pre-swapped with the same hover while it holds the ring, normal plus hover otherwise', async ($, on) => {
+    const rig = createRig(on)
+    for (const surface of SURFACES) {
+      const base = viewOf(snapshotOf(runOf()))
+      const focused = await rig.draw($, surface, { ...base, focusedKey: 'run-900' }, handlersFor([]))
+      const on1 = (await focused.find({ key: 'run-900' })) as { props: Record<string, unknown>; children: Piece[] }
+      expect(on1.props.label).toBe('#12 CI')
+      expect(on1.children).toHaveLength(1)
+      expect(on1.children[0]?.props).toMatchObject(swapped)
+      expect(on1.children[0]?.hover).toEqual(swapped)
+      await focused.unmount()
+      for (const focusedKey of [null, 'tab-actions', 'back']) {
+        const rest = await rig.draw($, surface, { ...base, focusedKey }, handlersFor([]))
+        const off = (await rest.find({ key: 'run-900' })) as { children: Piece[] }
+        expect(off.children[0]?.props?.color).toBeUndefined()
+        expect(off.children[0]?.props?.backgroundColor).toBeUndefined()
+        expect(off.children[0]?.hover).toEqual(swapped)
+        await rest.unmount()
+      }
+    }
+  })
+
+  test('sits alone in a Box keyed head-run-900', async ($, on) => {
+    const rig = createRig(on)
+    const ui = await rig.draw($, 'terminal', { ...viewOf(snapshotOf(runOf())), focusedKey: 'run-900' }, handlersFor([]))
+    const box = (await ui.find({ key: 'head-run-900' })) as { type: string; children: { type: string; key?: unknown }[] }
+    expect(box.type).toBe('Box')
+    expect(box.children.map((child) => child.type)).toEqual(['Button'])
+    await ui.press({ key: 'run-900' })
+    await ui.unmount()
+  })
+})

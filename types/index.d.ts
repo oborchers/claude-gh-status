@@ -522,6 +522,8 @@ declare module 'claude-code' {
       paneView: 'list' | 'detail';
       /** Key of the pane element that holds the focus ring (`pr-<n>` in the list); null until known. */
       paneFocus: string | null;
+      /** Key of the pane element that holds the focus ring in any tab and view (a row, a header title, a tab or a footer Button); null until known. */
+      paneRing: string | null;
       /** Which tab the pane shows. The PRs tab keeps `paneView`, `listPage`, `selected` and `paneFocus`. */
       paneTab: PaneTab;
       /** Where the Issues tab stands. */

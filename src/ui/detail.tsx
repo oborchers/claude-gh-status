@@ -8,6 +8,7 @@ import { relativeTime } from '../status'
 import type { Palette } from './colors'
 import type { RepoHandlers, UiTable } from './contract'
 import { cellWidth, headingLine, retryText, truncate, unavailableText } from './format'
+import { swapped } from './row'
 
 const BACK_LABEL = 'back to list'
 const LIST_GAP = 2
@@ -41,19 +42,35 @@ export function navButtons(table: UiTable, handlers: Pick<RepoHandlers, 'back'>)
 }
 
 /**
+ * A header title Button drawn calm: its text is the Button's child (the label stays the
+ * accessible name), pre-swapped while it holds the ring so the engine's inverse reads
+ * as normal text on the focus background, with the same swapped colors under the
+ * pointer. It sits alone in a Box keyed `head-<key>`.
+ */
+export function titleButton(table: UiTable, key: string, label: string, isFocused: boolean, onPress: () => void): RenderElement {
+  const { Box, Button, Text } = table
+  const hover = swapped(undefined, false)
+  return (
+    <Box key={`head-${key}`} flexShrink={0}>
+      <Button key={key} plain label={label} onPress={onPress}>
+        {isFocused ? <Text {...hover} hover={hover}>{label}</Text> : <Text hover={hover}>{label}</Text>}
+      </Button>
+    </Box>
+  )
+}
+
+/**
  * The header row: `lead` (a badge or glyph, `leadWidth` cells), then the title as a plain
  * Button keyed `titleKey` whose press only refreshes (a stable focus anchor), then the
- * navigation. The title is cut to what is left.
+ * navigation. The title is cut to what is left; `focusedKey` is the pane's focus ring.
  */
-export function detailHeader(table: UiTable, columns: number, lead: RenderElement | null, leadWidth: number, titleKey: string, title: string, handlers: Pick<RepoHandlers, 'back' | 'refresh'>): RenderElement {
-  const { Box, Button } = table
+export function detailHeader(table: UiTable, columns: number, lead: RenderElement | null, leadWidth: number, titleKey: string, title: string, handlers: Pick<RepoHandlers, 'back' | 'refresh'>, focusedKey: string | null = null): RenderElement {
+  const { Box } = table
   const label = truncate(title, Math.max(1, columns - leadWidth - navWidth()))
   return (
     <Box flexDirection="row" flexWrap="nowrap">
       {lead === null ? null : <Box flexShrink={0}>{lead}</Box>}
-      <Box flexShrink={0}>
-        <Button key={titleKey} plain label={label} onPress={() => handlers.refresh()} />
-      </Box>
+      {titleButton(table, titleKey, label, focusedKey === titleKey, () => handlers.refresh())}
       {navButtons(table, handlers)}
     </Box>
   )

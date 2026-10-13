@@ -4,6 +4,7 @@ import type { PaneTab } from '../src/model'
 import { PALETTES } from '../src/ui/colors'
 import type { TabsView } from '../src/ui/contract'
 import { cellWidth } from '../src/ui/format'
+import { FOCUS_BG, FOCUS_FG } from '../src/ui/row'
 import { renderTabs } from '../src/ui/tabs'
 import { SURFACES, createRig, hotkeysOf, linesOf, nodesOf } from './fixtures/ui-rig'
 
@@ -92,6 +93,41 @@ describe('renderTabs', () => {
       expect(calls).toEqual(['issues', 'actions', 'prs'])
       await ui.unmount()
     }
+  })
+
+  test('the tab that holds the ring is drawn pre-swapped; every piece takes the swapped hover; each Button sits alone in its tabbox Box', async ($, on) => {
+    const rig = rigFor(on)
+    type Piece = { props?: Record<string, unknown>; hover?: unknown }
+    const swapped = { color: FOCUS_BG, backgroundColor: FOCUS_FG }
+    const claude = PALETTES.claude
+    for (const surface of SURFACES) {
+      const ui = await rig.show($, surface, viewOf({ tab: 'issues', focusedKey: 'tab-issues' }), ignore, 80)
+      const issues = (await ui.find({ key: 'tab-issues' })) as { children: Piece[] }
+      expect(issues.children.map((piece) => piece.props?.color)).toEqual([FOCUS_BG, FOCUS_BG, FOCUS_BG])
+      expect(issues.children.map((piece) => piece.props?.backgroundColor)).toEqual([FOCUS_FG, FOCUS_FG, FOCUS_FG])
+      expect(issues.children.every((piece) => piece.props?.bold === true)).toBe(true)
+      for (const piece of issues.children) expect(piece.hover).toEqual({ ...swapped, bold: true })
+      const actions = (await ui.find({ key: 'tab-actions' })) as { children: Piece[] }
+      // not focused: its own look, the symbol in its tone, and the swapped hover (the symbol keeps its tone as the background)
+      expect(actions.children[0]?.props?.color).toBeUndefined()
+      expect(actions.children[0]?.props?.dimColor).toBe(true)
+      expect(actions.children[0]?.hover).toEqual(swapped)
+      expect(actions.children[2]?.props?.color).toBe(claude.failure)
+      expect(actions.children[2]?.hover).toEqual({ color: FOCUS_BG, backgroundColor: claude.failure })
+      for (const tab of ['prs', 'issues', 'actions']) {
+        const box = (await ui.find({ key: `tabbox-${tab}` })) as { type: string; children: { type: string }[] }
+        expect(box.type).toBe('Box')
+        expect(box.children.map((child) => child.type)).toEqual(['Button'])
+      }
+      await ui.unmount()
+    }
+  })
+
+  test('the symbol of a focused tab keeps its tone as the background', async ($, on) => {
+    const rig = rigFor(on)
+    const ui = await rig.show($, 'terminal', viewOf({ tab: 'actions', focusedKey: 'tab-actions' }), ignore, 80)
+    const actions = (await ui.find({ key: 'tab-actions' })) as { children: { props?: Record<string, unknown> }[] }
+    expect(actions.children[2]?.props).toMatchObject({ color: FOCUS_BG, backgroundColor: PALETTES.claude.failure })
   })
 
   test('locked: the same look as plain text, no Buttons', async ($, on) => {
