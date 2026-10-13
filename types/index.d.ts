@@ -340,7 +340,136 @@ export type ListCounts = {
   open: number;
   yours: number;
   requested: number;
+  /** Open issues of the repository; absent until read. */
+  issues?: number;
   at: string;
+};
+
+/** Which tab of the pane is showing. */
+export type PaneTab = 'prs' | 'issues' | 'actions';
+
+/** Where a tab of the pane stands: its level, page and focused row. Kept per tab for the session. */
+export type TabState = {
+  level: 'list' | 'detail';
+  /** Zero-based page of the tab's list. */
+  page: number;
+  /** Key of the row that held the focus ring in the list (`issue-<n>`, `run-<id>`); null until known. */
+  focus: string | null;
+  /** The issue number or run id the detail shows; null on the list. */
+  selected: number | null;
+};
+
+/** Which issue list group an issue falls in, in display order. */
+export type IssueGroup = 'assigned' | 'opened' | 'mentioned' | 'other';
+
+/** One open issue in the repository list. */
+export type IssueItem = {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  /** Author login; null for a deleted account. */
+  author: string | null;
+  createdAt: string;
+  /** Label name and its GitHub hex color without '#'. */
+  labels: { name: string; color: string }[];
+  assignees: string[];
+  comments: number;
+  /** Numbers of the pull requests that close the issue when merged. */
+  linkedPrs: number[];
+  /** The viewer is mentioned (from a `mentions:@me` search). */
+  mentionsViewer: boolean;
+};
+
+/** The repository's open issues, as one list refresh saw them. */
+export type IssueList =
+  | { kind: 'loading'; at: string }
+  | { kind: 'list'; at: string; location: RepoLocation; account: AccountChoice; items: IssueItem[]; total: number; isTruncated: boolean; problem?: Problem | null }
+  | { kind: 'error'; at: string; message: string; problem?: Problem };
+
+/** One comment of an issue, newest last. */
+export type IssueComment = {
+  author: string;
+  isBot: boolean;
+  createdAt: string;
+  editedAt: string | null;
+  body: string;
+  url: string;
+};
+
+/** A pull request that closes an issue. */
+export type LinkedPr = { number: number; title: string; state: 'open' | 'closed' | 'merged' };
+
+/** One issue with what its detail view shows. */
+export type Issue = {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  state: 'open' | 'closed';
+  /** `completed`, `not-planned`, `reopened` or null. */
+  stateReason: string | null;
+  author: string | null;
+  createdAt: string;
+  labels: { name: string; color: string }[];
+  assignees: string[];
+  milestone: string | null;
+  /** Markdown of the issue body. */
+  body: string;
+  linkedPrs: LinkedPr[];
+  /** The latest comments (up to 10), oldest first. */
+  comments: IssueComment[];
+  commentCount: number;
+};
+
+export type IssueSnapshot =
+  | { kind: 'loading'; at: string; number: number }
+  | { kind: 'issue'; at: string; location: RepoLocation; account: AccountChoice; issue: Issue; stale?: Problem | null }
+  | { kind: 'error'; at: string; number: number; message: string; problem?: Problem };
+
+/** One GitHub Actions workflow run. */
+export type RunItem = {
+  id: number;
+  runNumber: number;
+  workflowId: number;
+  /** The workflow's name, as the run shows it. */
+  name: string;
+  branch: string | null;
+  event: string;
+  actor: string | null;
+  /** queued, running or the conclusion once completed. */
+  state: CheckState;
+  headSha: string;
+  createdAt: string;
+  /** When the run (this attempt) started; null before. */
+  startedAt: string | null;
+  updatedAt: string;
+  url: string;
+  attempt: number;
+};
+
+/** Which run list group a run falls in, in display order. */
+export type RunGroup = 'main' | 'branch' | 'recent';
+
+/** The Actions runs the tab lists: the newest per workflow on the default branch and on this branch, then recent others. */
+export type RunList =
+  | { kind: 'loading'; at: string }
+  | { kind: 'list'; at: string; location: RepoLocation; account: AccountChoice; defaultBranch: string; main: RunItem[]; branch: RunItem[]; recent: RunItem[]; problem?: Problem | null }
+  | { kind: 'error'; at: string; message: string; problem?: Problem };
+
+export type RunSnapshot =
+  | { kind: 'loading'; at: string; runId: number }
+  | { kind: 'run'; at: string; location: RepoLocation; account: AccountChoice; run: RunItem; jobs: JobDetail[]; stale?: Problem | null }
+  | { kind: 'error'; at: string; runId: number; message: string; problem?: Problem };
+
+/** The newest run per workflow on the default branch, for the band and the Actions tab label. */
+export type MainStatus = {
+  at: string;
+  defaultBranch: string;
+  /** The worst state among the newest runs: failure over running over success; null without runs. */
+  worst: CheckState | null;
+  /** The workflows whose newest run on the default branch failed, newest first. */
+  failing: { name: string; runId: number; url: string }[];
 };
 
 export type ActionOutcome = {
@@ -385,6 +514,22 @@ declare module 'claude-code' {
       paneView: 'list' | 'detail';
       /** Key of the pane element that holds the focus ring (`pr-<n>` in the list); null until known. */
       paneFocus: string | null;
+      /** Which tab the pane shows. The PRs tab keeps `paneView`, `listPage`, `selected` and `paneFocus`. */
+      paneTab: PaneTab;
+      /** Where the Issues tab stands. */
+      issuesTab: TabState;
+      /** Where the Actions tab stands. */
+      actionsTab: TabState;
+      /** Open issues of the repository, while the Issues tab shows its list. */
+      issues: IssueList | null;
+      /** The issue the Issues tab shows in detail. */
+      issueSnapshot: IssueSnapshot | null;
+      /** Actions runs, while the Actions tab shows its list. */
+      runs: RunList | null;
+      /** The run the Actions tab shows in detail. */
+      runSnapshot: RunSnapshot | null;
+      /** Newest runs on the default branch, for the band and the tab label. */
+      mainStatus: MainStatus | null;
     };
   }
 }
