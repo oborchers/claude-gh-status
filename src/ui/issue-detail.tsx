@@ -89,7 +89,7 @@ export function renderIssueDetail(table: UiTable, view: IssueDetailView, handler
     </Box>
   )
   const header: RenderElement[] = [
-    detailHeader(table, columns, lead, cellWidth(issue.state) + 3, `issue-${issue.number}`, `#${issue.number} ${issue.title}`, handlers),
+    ...detailHeader(table, lead, `issue-${issue.number}`, `#${issue.number}`, issue.title, handlers),
     <Text dimColor wrap="truncate-end">
       {truncate(`${issue.author === null ? 'ghost' : `@${issue.author}`} · opened ${relativeTime(issue.createdAt, nowMs)}`, columns)}
     </Text>,
