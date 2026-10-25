@@ -318,6 +318,10 @@ Architecture:
 - The state contract lives in `types/index.d.ts`.
 - Tests are in `tests/`.
 
+## Author
+
+Built by [Dr. Oliver Borchers](https://www.drborchers.com), Executive AI and Automation Partner and Head of AI Engineering at IU Group.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
